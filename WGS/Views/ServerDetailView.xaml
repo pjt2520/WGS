@@ -668,8 +668,20 @@
                                 <TextBox Text="{Binding Server.DiscordStatusChannelId, UpdateSourceTrigger=PropertyChanged}"
                                          Style="{StaticResource DarkTextBox}" Margin="0,0,0,4"
                                          ToolTip="If set, this server gets its own live status board in this channel instead of sharing the bot's combined status board."/>
-                                <TextBlock Foreground="#8B949E" FontSize="11" Margin="0,0,0,12"
+                                <TextBlock Foreground="#8B949E" FontSize="11" Margin="0,0,0,8"
                                            Text="Leave empty to share the combined board from Settings → Discord Bot"/>
+
+                                <!-- Sharing a join code grants anyone who can read this
+                                     Discord channel a way to attempt joining the world.
+                                     This is explicit opt-in, never the default. -->
+                                <CheckBox IsChecked="{Binding Server.DiscordPublishJoinCode}"
+                                          Style="{StaticResource DarkCheckBox}"
+                                          Content="Show Valheim PlayFab join code on Discord status board"
+                                          Margin="0,0,0,4"
+                                          ToolTip="For Valheim crossplay only. Shares the current join code in the Discord bot's configured status channel."/>
+                                <TextBlock Foreground="#D29922" FontSize="11"
+                                           TextWrapping="Wrap" Margin="22,0,0,12"
+                                           Text="Anyone who can read your Discord status channel will see this code. Requires the Discord bot's live status board to be enabled; changes appear at its next refresh."/>
 
                                 <CheckBox IsChecked="{Binding Server.DiscordAdminControls}" Style="{StaticResource DarkCheckBox}"
                                           Content="Enable admin controls (Start/Stop/Restart/Backup/Update buttons)" Margin="0,0,0,8"
