@@ -85,5 +85,47 @@ Expect("Ambiguous disconnect avoids claiming either identity remains online",
 xbox.OnLogLine("New session server \"Tangerang\" that has join code , now 0 player(s)");
 Expect("New lobby resets identities from previous session", xbox.GetKnownPlayers().Count == 0);
 
+// Join codes are generated only after successful PlayFab registration.
+// Leading zeros must be retained; a lobby created without registration
+// must not accidentally display a previous session's code.
+var invitation = new ValheimPlayerTracker();
+Expect("No join code before PlayFab registration",
+    invitation.GetCurrentJoinCode() == null);
+invitation.OnLogLine("New session server \"Tangerang\" that has join code , now 0 player(s)");
+invitation.OnLogLine("Session \"Tangerang\" registered with join code 032292");
+Expect("Registered PlayFab join code preserves leading zero",
+    invitation.GetCurrentJoinCode() == "032292");
+invitation.OnLogLine("Session \"Tangerang\" with join code 032292 is active with 0 player(s)");
+Expect("Lobby heartbeat does not change current join code",
+    invitation.GetCurrentJoinCode() == "032292");
+invitation.OnLogLine("New session server \"Tangerang\" that has join code , now 0 player(s)");
+Expect("New lobby clears stale join code",
+    invitation.GetCurrentJoinCode() == null);
+invitation.OnLogLine("Session \"Tangerang\" registered with join code 654321");
+Expect("New session exposes only its newly registered code",
+    invitation.GetCurrentJoinCode() == "654321");
+
+// Concurrent identity association MUST NOT claim the first character name
+// belongs to the first socket. Valheim does not include the ID in that line.
+var overlapping = new ValheimPlayerTracker();
+overlapping.OnLogLine("PlayFab listen socket child connected to remote player A001");
+overlapping.OnLogLine("PlayFab socket with remote ID playfab/A001 received local Platform ID Xbox_FAKE");
+overlapping.OnLogLine("PlayFab listen socket child connected to remote player B002");
+overlapping.OnLogLine("PlayFab socket with remote ID playfab/B002 received local Platform ID PSN_FAKE");
+overlapping.OnLogLine("Got character ZDOID from Second Character : 5:7");
+overlapping.OnLogLine("Got character ZDOID from First Character : 8:9");
+var overlapNames = overlapping.GetKnownPlayers();
+Expect("Concurrent joins keep two observed names",
+    overlapNames.Count == 2 && overlapNames.Any(p => p.Name == "Second Character")
+    && overlapNames.Any(p => p.Name == "First Character"));
+Expect("Concurrent joins do not invent Xbox/PSN name mapping",
+    overlapNames.All(p => p.SteamId == ""));
+overlapping.OnLogLine("Got character ZDOID from Second Character : 5:7");
+Expect("Duplicate character event cannot inflate observations",
+    overlapping.GetKnownPlayers().Count == 2);
+overlapping.OnLogLine("Player connection lost server \"Tangerang\" that has join code 654321, now 1 player(s)");
+Expect("Unattributed PlayFab disconnect clears ambiguous names",
+    overlapping.GetKnownPlayers().Count == 0);
+
 Console.WriteLine($"Results: {checks - failures} passed, {failures} failed.");
 return failures == 0 ? 0 : 1;
