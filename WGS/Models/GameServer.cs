@@ -41,6 +41,12 @@ public class GameServer
     public string DiscordWebhookUrl       { get; set; } = string.Empty;
     /// <summary>Server-specific channel for the live Discord status message/board. Falls back to the bot's global status channel when empty.</summary>
     public string DiscordStatusChannelId  { get; set; } = string.Empty;
+    /// <summary>
+    /// Opt in to sharing the current Valheim PlayFab join code on the Discord
+    /// bot's live status board. Disabled by default: a code is an invitation
+    /// that members of the configured Discord channel can use to join.
+    /// </summary>
+    public bool DiscordPublishJoinCode { get; set; } = false;
     /// <summary>Enables Start/Stop/Restart/Backup/Update buttons for this server, posted to DiscordAdminChannelId — a separate, presumably restricted channel, never the public status board.</summary>
     public bool DiscordAdminControls      { get; set; } = false;
     /// <summary>Channel for the admin control buttons. Keep this private/staff-only — anyone who can press these buttons can stop or update the server.</summary>
