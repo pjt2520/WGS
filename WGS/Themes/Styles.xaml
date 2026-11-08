@@ -211,9 +211,19 @@
                     <Path Grid.Column="1" Data="M 0 0 L 4 4 L 8 0 Z"
                           Fill="{StaticResource TextSecondaryBrush}"
                           VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                    <!-- Without a custom template, Windows draws the default
+                         ToggleButton's bright blue pressed/hover face over the
+                         game selector, hiding the dark theme's selected text. -->
                     <ToggleButton Grid.Column="0" Grid.ColumnSpan="2"
-                                  Focusable="False" IsChecked="{Binding IsDropDownOpen, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
-                                  Background="Transparent" BorderThickness="0" Cursor="Hand"/>
+                                  Focusable="False"
+                                  IsChecked="{Binding IsDropDownOpen, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                                  Cursor="Hand">
+                        <ToggleButton.Template>
+                            <ControlTemplate TargetType="ToggleButton">
+                                <Border Background="Transparent"/>
+                            </ControlTemplate>
+                        </ToggleButton.Template>
+                    </ToggleButton>
                 </Grid>
             </Border>
             <Popup x:Name="PART_Popup"
@@ -258,7 +268,11 @@
                             <Setter TargetName="bd" Property="Background" Value="#2D333B"/>
                         </Trigger>
                         <Trigger Property="IsSelected" Value="True">
-                            <Setter TargetName="bd" Property="Background" Value="#388bfd22"/>
+                            <!-- WPF uses #AARRGGBB, not CSS #RRGGBBAA.
+                                 Choose an opaque dark selection with legible
+                                 light text rather than a translucent Windows
+                                 accent color. -->
+                            <Setter TargetName="bd" Property="Background" Value="#254765"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
