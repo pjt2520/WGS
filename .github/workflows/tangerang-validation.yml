@@ -1,0 +1,35 @@
+name: Tangerang validation
+
+on:
+  push:
+    branches:
+      - 'tangerang/dev'
+      - 'feature/**'
+  pull_request:
+    branches:
+      - 'tangerang/dev'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-regress:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore solution
+        run: dotnet restore WindowsGameServer.sln
+
+      - name: Build desktop and service host
+        run: dotnet build WindowsGameServer.sln --configuration Debug --no-restore
+
+      - name: Run Valheim health-policy regression checks
+        run: dotnet run --project WGS.HealthChecks.Tests/WGS.HealthChecks.Tests.csproj --configuration Debug
