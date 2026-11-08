@@ -110,7 +110,7 @@ public sealed class ValheimPlayerTracker
             if (closed.Success)
             {
                 _peers.Remove("steam/" + closed.Groups[1].Value);
-                // Any abandoned queue items are ignored when dequeued later.
+                RebuildPendingQueue();
                 return;
             }
 
@@ -123,9 +123,22 @@ public sealed class ValheimPlayerTracker
                 foreach (var key in _peers.Values.Where(p => p.IsPlayFab)
                              .Select(p => p.Key).ToArray())
                     _peers.Remove(key);
+                RebuildPendingQueue();
                 return;
             }
         }
+    }
+
+    // Remove stale pending IDs as soon as a connection is lost. Otherwise a
+    // rapid reconnect reusing the same PlayFab remote ID could consume an old
+    // queue entry and accidentally attach the next character to the wrong peer.
+    private void RebuildPendingQueue()
+    {
+        var live = _pending.Where(key => _peers.ContainsKey(key)).ToArray();
+        _pending.Clear();
+        _pendingSet.Clear();
+        foreach (var key in live)
+            if (_pendingSet.Add(key)) _pending.Enqueue(key);
     }
 
     private void EnqueueNewPeer(string key, bool playFab)
