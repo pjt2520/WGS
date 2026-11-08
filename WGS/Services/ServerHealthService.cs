@@ -210,7 +210,7 @@ public class ServerHealthService : IDisposable
         // non-crossplay Valheim and other games keep their existing probes.
         if (plugin is ValheimPlugin
             && server.GameSpecificSettings.TryGetValue("crossplay", out var crossplay)
-            && string.Equals(crossplay, "true", StringComparison.OrdinalIgnoreCase))
+            && crossplay == "true") // Match the exact value used by ValheimPlugin.BuildStartArguments.
             return false;
 
         return plugin is IA2SQueryPlugin
