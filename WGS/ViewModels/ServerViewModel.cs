@@ -81,6 +81,10 @@ public partial class ServerViewModel : BaseViewModel, IDisposable
 
     // Players — reaaliaikainen lista
     [ObservableProperty] private List<Models.OnlinePlayer>    _onlinePlayers  = [];
+    // Never label PlayFab's partially observed list as an exact online count.
+    // This text is deliberately separate from OnlinePlayers.Count.
+    [ObservableProperty] private string _playerListHeading = "Player count unavailable";
+    [ObservableProperty] private string _playerListEmptyText = "No player information available.";
     [ObservableProperty] private List<Services.PlayerSession> _playerHistory  = [];
     [ObservableProperty] private List<Services.PlayerStats>   _playerStatsList = [];
     [ObservableProperty] private List<Services.PlayerStats>   _mostActivePlayers = [];
@@ -1441,9 +1445,40 @@ public partial class ServerViewModel : BaseViewModel, IDisposable
         Server.CurrentPlayers = parsed.Count;
         // The RCON branches only get here with a real response; the backend branches set the flag themselves.
         if (!viaBackend) Server.PlayerCountUnknown = false;
-        // A failed query returns an empty list — diffing that against the previous list would log everyone as
-        // having left (and announce them all joining again once the query recovers). Keep the last known list.
-        else if (Server.PlayerCountUnknown) return;
+
+        if (Server.PlayerCountUnknown)
+        {
+            // Crossplay tracking is observational, not authoritative. Display
+            // characters seen in the vanilla log, but do not record these as
+            // verified join/leave events or send player-count-based alerts.
+            // Crucially, "0 observed" does NOT mean "server empty".
+            bool playFab = Server.GameId == "valheim"
+                && Server.GameSpecificSettings.TryGetValue("crossplay", out var crossplay)
+                && crossplay == "true";
+            WpfApplication.Current?.Dispatcher?.Invoke(() =>
+            {
+                if (playFab)
+                {
+                    OnlinePlayers = parsed;
+                    PlayerListHeading = $"{parsed.Count} observed (total count unknown)";
+                    PlayerListEmptyText = "No named players observed; actual count unknown.";
+                }
+                else
+                {
+                    PlayerListHeading = "Player count unavailable";
+                    PlayerListEmptyText = "Last known players may no longer be connected.";
+                }
+            });
+            return;
+        }
+
+        // Here the count is backed by a query that succeeded, rather than
+        // inferred from incomplete connection/disconnect log messages.
+        WpfApplication.Current?.Dispatcher?.Invoke(() =>
+        {
+            PlayerListHeading = $"{parsed.Count} players online";
+            PlayerListEmptyText = "No players online.";
+        });
 
         // Compare against the previous list → session logging
         var prev = OnlinePlayers.ToList();
