@@ -20,7 +20,16 @@ public partial class App : System.Windows.Application
 
     protected override void OnStartup(System.Windows.StartupEventArgs e)
     {
-        _singleInstanceMutex = new System.Threading.Mutex(true, "WGS_SingleInstance_Mutex", out var createdNew);
+        // Explicit Tangerang development mode allows a separate *test* UI
+        // without colliding with the real WGS single-instance lock.
+        // This MUST be paired with ConfigService's isolated data directories.
+        // Normal WGS behavior is unchanged unless the launch script sets
+        // TANGERANG_WGS_DEV=1 for this process.
+        bool devMode = Environment.GetEnvironmentVariable("TANGERANG_WGS_DEV") == "1";
+        string mutexName = devMode
+            ? "TangerangWGSDev_SingleInstance_Mutex"
+            : "WGS_SingleInstance_Mutex";
+        _singleInstanceMutex = new System.Threading.Mutex(true, mutexName, out var createdNew);
         if (!createdNew)
         {
             System.Windows.MessageBox.Show(
