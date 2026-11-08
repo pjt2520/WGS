@@ -434,7 +434,7 @@ public class WebApiService : IDisposable
                     servers = servers.Where(s => authedUser.AllowedServerIds.Contains(s.Id));
                 await SendJson(resp, servers.Select(s => new {
                     s.Id, s.DisplayName, s.GameId, Status = s.Status.ToString(),
-                    s.ServerPort, s.MaxPlayers, s.CurrentPlayers,
+                    s.ServerPort, s.MaxPlayers, s.CurrentPlayers, s.PlayerCountUnknown,
                     Notes = s.Notes ?? "" }));
                 return;
             }
@@ -451,7 +451,7 @@ public class WebApiService : IDisposable
                     p.Name, p.SteamId, p.Ping, p.ConnectedSeconds, p.ConnectedText }) ?? [];
                 await SendJson(resp, new {
                     srv.Id, srv.DisplayName, srv.GameId, Status = srv.Status.ToString(),
-                    srv.ServerPort, srv.MaxPlayers, srv.CurrentPlayers,
+                    srv.ServerPort, srv.MaxPlayers, srv.CurrentPlayers, srv.PlayerCountUnknown,
                     Uptime = uptime ?? "--:--:--",
                     Players = players,
                     Notes  = srv.Notes ?? "",
@@ -1657,7 +1657,7 @@ function upsertCard(s){
     </div>
   </div>
   <div class="srv-stats">
-    <div class="stat"><span id="pl_${s.Id}">${s.CurrentPlayers}/${s.MaxPlayers}</span>Players</div>
+    <div class="stat"><span id="pl_${s.Id}">${s.PlayerCountUnknown?'?':s.CurrentPlayers}/${s.MaxPlayers}</span>Players</div>
     <div class="stat"><span>${s.ServerPort}</span>Port</div>
   </div>
   <svg class="spark" id="spark_${s.Id}" viewBox="0 0 100 28" preserveAspectRatio="none"></svg>
@@ -1735,26 +1735,26 @@ async function fetchDetail(id){
     const el=document.getElementById('up_'+id);
     if(el){el.textContent='Uptime: '+d.Uptime;el.style.display='block';}
     const plEl=document.getElementById('pl_'+id);
-    if(plEl)plEl.textContent=d.Players.length+'/'+d.MaxPlayers;
+    if(plEl)plEl.textContent=(d.PlayerCountUnknown?'?':d.Players.length)+'/'+d.MaxPlayers;
     // Old pills row (hidden, kept for compat)
     const row=document.getElementById('plrow_'+id);
     if(row)row.innerHTML='';
     // Player toggle label
     const pltog=document.getElementById('pltog_'+id);
-    if(pltog)pltog.textContent=(d.Players.length>0?'▼':'▼')+' Players ('+d.Players.length+')';
+    if(pltog)pltog.textContent=d.PlayerCountUnknown ? '▼ Observed ('+d.Players.length+', total unknown)' : '▼ Players ('+d.Players.length+')';
     // Player panel (if open)
     const plpanel=document.getElementById('plpanel_'+id);
-    if(plpanel&&plpanel.classList.contains('open'))renderPlayerPanel(id,d.Players,d.MaxPlayers);
+    if(plpanel&&plpanel.classList.contains('open'))renderPlayerPanel(id,d.Players,d.MaxPlayers,d.PlayerCountUnknown);
     // Notes — init once
     const ntxt=document.getElementById('ntxt_'+id);
     if(ntxt&&_serverNotes[id]==null){_serverNotes[id]=d.Notes||'';ntxt.value=_serverNotes[id];}
   }catch(e){}
 }
 
-function renderPlayerPanel(id,players,maxPlayers){
+function renderPlayerPanel(id,players,maxPlayers,unknown=false){
   const plpanel=document.getElementById('plpanel_'+id);
   if(!plpanel)return;
-  if(players.length===0){plpanel.innerHTML='<div style="font-size:12px;color:#8b949e;padding:2px 0">No players online.</div>';return;}
+  if(players.length===0){plpanel.innerHTML='<div style="font-size:12px;color:#8b949e;padding:2px 0">'+(unknown?'No named players observed; total unknown.':'No players online.')+'</div>';return;}
   plpanel.innerHTML='<div class="player-row" style="font-size:10px;color:#8b949e;font-weight:600"><span class="pn">Name</span><span class="pp">Ping</span><span class="pt">Connected</span></div>'+
     players.map(p=>`<div class="player-row"><span class="pn">${esc(p.Name)}</span><span class="pp">${p.Ping>0?p.Ping+'ms':'—'}</span><span class="pt">${p.ConnectedText||'—'}</span></div>`).join('');
 }
@@ -1768,8 +1768,8 @@ function togglePlayers(id){
   // Refresh immediately
   api('servers/'+id).then(d=>{
     const pltog=document.getElementById('pltog_'+id);
-    if(pltog)pltog.textContent='▼ Players ('+d.Players.length+')';
-    renderPlayerPanel(id,d.Players,d.MaxPlayers);
+    if(pltog)pltog.textContent=d.PlayerCountUnknown ? '▼ Observed ('+d.Players.length+', total unknown)' : '▼ Players ('+d.Players.length+')';
+    renderPlayerPanel(id,d.Players,d.MaxPlayers,d.PlayerCountUnknown);
   }).catch(()=>{});
 }
 

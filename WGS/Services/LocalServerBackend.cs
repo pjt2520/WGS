@@ -719,6 +719,29 @@ public class LocalServerBackend : IServerBackend
                 if (k.Name != null) p.ConnectedSeconds = k.ConnectedSeconds;
             }
         }
+        else if (server.GameId == "valheim"
+                 && server.GameSpecificSettings.TryGetValue("crossplay", out var crossplay)
+                 && crossplay == "true")
+        {
+            // The PlayFab backend used by Xbox / PS5 does not provide the
+            // reliable Steam A2S_PLAYER responses WGS expects. Don't flood
+            // the log with query timeouts or interpret them as zero players.
+            //
+            // The vanilla console can reveal some confirmed character names
+            // (ValheimPlayerTracker), but may omit or misattribute simultaneous
+            // connections. A bare "Player connection lost" cannot identify
+            // which peer departed. Display only observed identities and keep
+            // PlayerCountUnknown=true so idle shutdown / auto-update cannot
+            // treat this as an empty server.
+            parsed = _manager.GetInstance(server.Id)?.ValheimPlayers?.GetKnownPlayers()
+                .Select(k => new OnlinePlayer
+                {
+                    Name = k.Name,
+                    SteamId = k.SteamId,
+                    ConnectedSeconds = k.ConnectedSeconds
+                }).ToList() ?? [];
+            server.PlayerCountUnknown = true;
+        }
         else if (plugin is IRestPlayersPlugin restPlugin)
         {
             parsed = await restPlugin.GetPlayersAsync(server);

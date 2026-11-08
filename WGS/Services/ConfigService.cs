@@ -18,7 +18,12 @@ public class ConfigService
     /// it), and it's what makes moving/backing up a whole WGS install a matter of copying one
     /// folder. Property kept named AppDataPath for now — many existing call sites read it —
     /// but it no longer means "the AppData folder."</summary>
-    static readonly string DataDir = Path.Combine(ExeDir, "WGS_Data");
+    // A developer launch must never use production settings/server records.
+    // This value is resolved once at startup, before any settings are loaded.
+    private static readonly bool IsTangerangDev =
+        Environment.GetEnvironmentVariable("TANGERANG_WGS_DEV") == "1";
+    static readonly string DataDir = Path.Combine(ExeDir,
+        IsTangerangDev ? "Tangerang_DevData" : "WGS_Data");
 
     /// <summary>Set to the old %AppData%\WGS path only when a migration actually ran this
     /// startup — App.xaml.cs uses this to decide whether to ask the user, once, whether to
@@ -42,6 +47,9 @@ public class ConfigService
     /// </summary>
     private void MigrateFromAppDataIfNeeded()
     {
+        // The dev sandbox starts empty. Never import historic live server
+        // records, credentials or auto-start settings from %AppData%\WGS.
+        if (IsTangerangDev) return;
         if (Directory.Exists(DataDir)) return; // already migrated (or a fresh install)
         var oldPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "WGS");
         if (!Directory.Exists(oldPath)) return; // fresh install, nothing to migrate
@@ -119,11 +127,22 @@ public class ConfigService
         AppDataPath        = DataDir;
         ServersFile        = Path.Combine(AppDataPath, "servers.json");
         SettingsFile       = Path.Combine(AppDataPath, "settings.json");
-        DefaultInstallRoot = Path.Combine(ExeDir, "servers");
-        BackupPath         = Path.Combine(ExeDir, "backups");
+        DefaultInstallRoot = Path.Combine(ExeDir,
+            IsTangerangDev ? "Tangerang_DevServers" : "servers");
+        BackupPath         = Path.Combine(ExeDir,
+            IsTangerangDev ? "Tangerang_DevBackups" : "backups");
         Directory.CreateDirectory(AppDataPath);
         Directory.CreateDirectory(DefaultInstallRoot);
         LoadSettings();
+        if (IsTangerangDev)
+        {
+            // Never automatically expose a web/API endpoint, configure UPnP,
+            // or attach the dev UI to the production Windows Service.
+            WebApiEnabled = false;
+            SlaveMode = false;
+            ServiceModeEnabled = false;
+            EnableUPnP = false;
+        }
         Directory.CreateDirectory(BackupPath);
     }
 

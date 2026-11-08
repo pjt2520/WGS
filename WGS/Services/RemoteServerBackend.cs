@@ -440,6 +440,17 @@ public class RemoteServerBackend : IServerBackend
 
     public async Task<List<Models.OnlinePlayer>> GetOnlinePlayersAsync(GameServer server)
     {
+        // The remote endpoint currently returns a list, not the liveness or
+        // completeness metadata. Preserve the conservative Unknown status
+        // for PlayFab when OdinEye is not providing an authoritative census.
+        // A future protocol revision should transmit the backend's exact
+        // PlayerCountUnknown flag instead of inferring it here.
+        if (server.GameId == "valheim"
+            && server.GameSpecificSettings.TryGetValue("crossplay", out var crossplay)
+            && crossplay == "true"
+            && !Games.ValheimOdinEye.IsEnabled(server))
+            server.PlayerCountUnknown = true;
+
         using var doc = await GetJsonAsync($"/api/servers/{Enc(server.Id)}/players");
         return doc.RootElement.EnumerateArray().Select(el => new Models.OnlinePlayer
         {

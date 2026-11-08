@@ -1576,6 +1576,20 @@
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                                 <Button Content="↻ Refresh" Style="{StaticResource GhostButton}"
                                         Command="{Binding RefreshPlayersCommand}"/>
+                                <!-- The PlayFab join code is ephemeral: it changes when the
+                                     dedicated server creates a new lobby. Never persist it
+                                     in server settings or present it outside active sessions. -->
+                                <StackPanel Orientation="Horizontal" Margin="14,0,0,0"
+                                            Visibility="{Binding IsValheimCrossplay, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="PlayFab code:" FontSize="12" VerticalAlignment="Center"
+                                               Foreground="{StaticResource TextMutedBrush}" Margin="0,0,8,0"/>
+                                    <TextBlock Text="{Binding ValheimJoinCode}" FontFamily="Consolas"
+                                               FontWeight="SemiBold" FontSize="13" VerticalAlignment="Center"
+                                               Foreground="{StaticResource TextPrimaryBrush}" Margin="0,0,8,0"/>
+                                    <Button Content="Copy code" Style="{StaticResource GhostButton}"
+                                            IsEnabled="{Binding CanCopyValheimJoinCode}"
+                                            Command="{Binding CopyValheimJoinCodeCommand}"/>
+                                </StackPanel>
                             </StackPanel>
                             <!-- Manual kick/ban (fallback when RCON doesn't support a player list) -->
                             <StackPanel Orientation="Horizontal" Visibility="{Binding HasPlayerCommands, Converter={StaticResource BoolToVis}}">
@@ -1616,17 +1630,15 @@
                                 <Border Grid.Row="0" Padding="16,8" Background="{StaticResource BgSurfaceBrush}"
                                         BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,0,0,1">
                                     <StackPanel Orientation="Horizontal">
-                                        <TextBlock FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center">
-                                            <Run Text="{Binding OnlinePlayers.Count, Mode=OneWay}"/>
-                                            <Run Text=" players online"/>
-                                        </TextBlock>
+                                        <TextBlock Text="{Binding PlayerListHeading}" FontSize="13"
+                                                   FontWeight="SemiBold" VerticalAlignment="Center"/>
                                         <TextBlock Text="  • updates every 15 s" FontSize="11"
                                                    Foreground="{StaticResource TextMutedBrush}" VerticalAlignment="Center"/>
                                     </StackPanel>
                                 </Border>
                                 <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Padding="16,8">
                                     <StackPanel>
-                                        <TextBlock Text="No players online."
+                                        <TextBlock Text="{Binding PlayerListEmptyText}"
                                                    FontSize="12" Foreground="{StaticResource TextMutedBrush}"
                                                    Visibility="{Binding OnlinePlayers.Count,
                                                        Converter={StaticResource ZeroToVis}, Mode=OneWay}"/>

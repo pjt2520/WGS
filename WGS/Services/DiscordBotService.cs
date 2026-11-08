@@ -383,7 +383,7 @@ public class DiscordBotService : IDisposable
             var ip     = string.IsNullOrEmpty(s.ServerIp) || s.ServerIp == "0.0.0.0" ? "127.0.0.1" : s.ServerIp;
             var plugin = GameRegistry.All.FirstOrDefault(p => p.GameId == s.GameId);
             var port   = (plugin?.UseGamePortForConnect == true || s.QueryPort == 0) ? s.ServerPort : s.QueryPort;
-            var line1  = online ? $"{onlineText} — {s.CurrentPlayers}/{s.MaxPlayers} players" : offlineText;
+            var line1  = online ? $"{onlineText} — {(s.PlayerCountUnknown ? "?" : s.CurrentPlayers.ToString())}/{s.MaxPlayers} players" : offlineText;
             var value  = $"{line1}\nConnect: `{ip}:{port}`";
             return new { name = s.DisplayName, value, inline = true };
         }).ToArray();

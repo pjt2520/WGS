@@ -86,7 +86,28 @@ public class SteamCmdService
 
         if (login == null || password == null)
         {
-            await RunAsync(serverId, Args("+login anonymous"), throwOnSteamError: true);
+            var installArgs = Args("+login anonymous");
+            try
+            {
+                await RunAsync(serverId, installArgs, throwOnSteamError: true);
+            }
+            catch (InvalidOperationException ex) when (IsMissingAppConfiguration(ex.Message, appId))
+            {
+                // A brand-new SteamCMD installation bootstraps/updates itself
+                // *during* the first game install. On some client versions its
+                // app metadata isn't ready until the next process launch.
+                //
+                // This is not a Windows elevation or disk-permissions error.
+                // Refresh the anonymous app catalogue once, then retry once
+                // with exactly the same target folder. Never retry forever or
+                // mask the original failure if Steam still cannot install.
+                OutputReceived?.Invoke(serverId,
+                    "[WGS] SteamCMD app configuration unavailable after startup. " +
+                    "Refreshing Steam metadata and retrying once...");
+                await RunAsync(serverId, "+login anonymous +app_info_update 1 +quit",
+                    throwOnSteamError: true);
+                await RunAsync(serverId, installArgs, throwOnSteamError: true);
+            }
             return;
         }
 
@@ -109,6 +130,17 @@ public class SteamCmdService
         }
         await RunAsync(serverId, Args($"+login {login} {password}"), throwOnSteamError: true);
     }
+
+    /// <summary>
+    /// SteamCMD's "Missing configuration" comes from the Steam app catalogue,
+    /// not an access-denied response from Windows. Only retry the specific
+    /// app being installed, never arbitrary errors (e.g. disk write failures).
+    /// Kept separate for dependency-free regression testing.
+    /// </summary>
+    internal static bool IsMissingAppConfiguration(string? message, int appId)
+        => message?.Contains(
+            $"Failed to install app '{appId}' (Missing configuration)",
+            StringComparison.OrdinalIgnoreCase) == true;
 
     private bool _sawLoginFailure;
 

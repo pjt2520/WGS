@@ -81,6 +81,42 @@ public partial class ServerViewModel : BaseViewModel, IDisposable
 
     // Players — reaaliaikainen lista
     [ObservableProperty] private List<Models.OnlinePlayer>    _onlinePlayers  = [];
+    // Never label PlayFab's partially observed list as an exact online count.
+    // This text is deliberately separate from OnlinePlayers.Count.
+    [ObservableProperty] private string _playerListHeading = "Player count unavailable";
+    [ObservableProperty] private string _playerListEmptyText = "No player information available.";
+
+    // Join codes are generated afresh on every PlayFab session. This is
+    // read from the server's live console tracker, never a stored/stale value.
+    [ObservableProperty] private string _valheimJoinCode = "Waiting for PlayFab...";
+    // The Copy button remains disabled until a fresh session has registered
+    // a six-digit invite. Status changes can invalidate it immediately.
+    public bool CanCopyValheimJoinCode => IsRunning
+        && System.Text.RegularExpressions.Regex.IsMatch(ValheimJoinCode, @"^\d{6}$");
+    partial void OnValheimJoinCodeChanged(string value)
+        => OnPropertyChanged(nameof(CanCopyValheimJoinCode));
+
+    public bool IsValheimCrossplay => Server.GameId == "valheim"
+        && Server.GameSpecificSettings.TryGetValue("crossplay", out var crossplay)
+        && crossplay == "true";
+
+    [RelayCommand]
+    private void CopyValheimJoinCode()
+    {
+        // Do not copy placeholders or an invite from a stopped server.
+        if (IsRunning && System.Text.RegularExpressions.Regex.IsMatch(
+                ValheimJoinCode, @"^\d{6}$"))
+            System.Windows.Clipboard.SetText(ValheimJoinCode);
+    }
+
+    private void RefreshValheimJoinCode()
+    {
+        if (!IsValheimCrossplay) return;
+        var code = IsRunning
+            ? _manager.GetInstance(Server.Id)?.ValheimPlayers?.GetCurrentJoinCode()
+            : null;
+        ValheimJoinCode = code ?? (IsRunning ? "Waiting for PlayFab..." : "Server stopped");
+    }
     [ObservableProperty] private List<Services.PlayerSession> _playerHistory  = [];
     [ObservableProperty] private List<Services.PlayerStats>   _playerStatsList = [];
     [ObservableProperty] private List<Services.PlayerStats>   _mostActivePlayers = [];
@@ -589,6 +625,7 @@ public partial class ServerViewModel : BaseViewModel, IDisposable
 
         RefreshStatus();
         RefreshBackups();
+        RefreshValheimJoinCode();
 
         // If the server was already running when this ViewModel was created (e.g. reattached
         // to a process that survived a WGS restart), the StatusChanged(Running) event already
@@ -1441,9 +1478,40 @@ public partial class ServerViewModel : BaseViewModel, IDisposable
         Server.CurrentPlayers = parsed.Count;
         // The RCON branches only get here with a real response; the backend branches set the flag themselves.
         if (!viaBackend) Server.PlayerCountUnknown = false;
-        // A failed query returns an empty list — diffing that against the previous list would log everyone as
-        // having left (and announce them all joining again once the query recovers). Keep the last known list.
-        else if (Server.PlayerCountUnknown) return;
+
+        if (Server.PlayerCountUnknown)
+        {
+            // Crossplay tracking is observational, not authoritative. Display
+            // characters seen in the vanilla log, but do not record these as
+            // verified join/leave events or send player-count-based alerts.
+            // Crucially, "0 observed" does NOT mean "server empty".
+            bool playFab = Server.GameId == "valheim"
+                && Server.GameSpecificSettings.TryGetValue("crossplay", out var crossplay)
+                && crossplay == "true";
+            WpfApplication.Current?.Dispatcher?.Invoke(() =>
+            {
+                if (playFab)
+                {
+                    OnlinePlayers = parsed;
+                    PlayerListHeading = $"{parsed.Count} observed (total count unknown)";
+                    PlayerListEmptyText = "No named players observed; actual count unknown.";
+                }
+                else
+                {
+                    PlayerListHeading = "Player count unavailable";
+                    PlayerListEmptyText = "Last known players may no longer be connected.";
+                }
+            });
+            return;
+        }
+
+        // Here the count is backed by a query that succeeded, rather than
+        // inferred from incomplete connection/disconnect log messages.
+        WpfApplication.Current?.Dispatcher?.Invoke(() =>
+        {
+            PlayerListHeading = $"{parsed.Count} players online";
+            PlayerListEmptyText = "No players online.";
+        });
 
         // Compare against the previous list → session logging
         var prev = OnlinePlayers.ToList();
@@ -2099,6 +2167,12 @@ public partial class ServerViewModel : BaseViewModel, IDisposable
         WpfApplication.Current?.Dispatcher?.Invoke(() =>
         {
             Log.Add(msg);
+            // ServerManagerService parses the line before raising LogReceived.
+            // Refresh only when the session starts or receives a join code.
+            if (IsValheimCrossplay
+                && (msg.Text.Contains("New session server ", StringComparison.Ordinal)
+                    || msg.Text.Contains("registered with join code ", StringComparison.Ordinal)))
+                RefreshValheimJoinCode();
             while (Log.Count > MaxConsoleLines)
                 Log.RemoveAt(0);
             if (!string.IsNullOrWhiteSpace(ConsoleFilter))
@@ -2109,7 +2183,12 @@ public partial class ServerViewModel : BaseViewModel, IDisposable
     private void OnStatusChanged(string serverId, ServerStatus status)
     {
         if (serverId != Server.Id) return;
-        WpfApplication.Current?.Dispatcher?.Invoke(RefreshStatus);
+        WpfApplication.Current?.Dispatcher?.Invoke(() =>
+        {
+            RefreshStatus();
+            RefreshValheimJoinCode();
+            OnPropertyChanged(nameof(CanCopyValheimJoinCode));
+        });
         _ = _notifications.NotifyServerStatusAsync(Server, status);
 
         var actionText = status switch

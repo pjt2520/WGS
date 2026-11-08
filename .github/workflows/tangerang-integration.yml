@@ -1,0 +1,30 @@
+name: Tangerang integrated validation
+
+on:
+  push:
+    branches:
+      - 'feature/tangerang-integration'
+  pull_request:
+    branches:
+      - 'tangerang/dev'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  combined-build-and-tests:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout development branch
+        uses: actions/checkout@v4
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Build WGS and ServiceHost
+        run: dotnet build WindowsGameServer.sln --configuration Debug
+      - name: Run freeze-policy regression tests
+        run: dotnet run --project WGS.HealthChecks.Tests/WGS.HealthChecks.Tests.csproj --configuration Debug
+      - name: Run crossplay and join-code regression tests
+        run: dotnet run --project WGS.Crossplay.Tests/WGS.Crossplay.Tests.csproj --configuration Debug

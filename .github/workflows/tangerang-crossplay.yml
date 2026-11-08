@@ -1,0 +1,31 @@
+name: Tangerang crossplay validation
+
+on:
+  push:
+    branches:
+      - 'feature/crossplay-players'
+  pull_request:
+    branches:
+      - 'tangerang/dev'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-replay:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+
+      - name: Install .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build WGS desktop and service
+        run: dotnet build WindowsGameServer.sln --configuration Debug
+
+      - name: Replay console tracking scenarios
+        run: dotnet run --project WGS.Crossplay.Tests/WGS.Crossplay.Tests.csproj --configuration Debug
