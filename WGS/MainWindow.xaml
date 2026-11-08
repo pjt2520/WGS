@@ -39,6 +39,15 @@
                         <Image Source="pack://application:,,,/WindowsGameServer;component/wgs.png"
                                Height="36" RenderOptions.BitmapScalingMode="HighQuality"/>
                         <TextBlock Text="{x:Static wgs:AppInfo.VersionDisplay}" FontSize="11" Foreground="{StaticResource TextSecondaryBrush}" Margin="8,1,0,0" VerticalAlignment="Center"/>
+                        <!-- Visible only when Start-TangerangDev.ps1 launches an isolated instance.
+                             Helps distinguish the experimental window from production WGS. -->
+                        <Border Background="#503919" BorderBrush="#D29922" BorderThickness="1"
+                                CornerRadius="4" Padding="8,4" Margin="12,0,0,0"
+                                VerticalAlignment="Center"
+                                Visibility="{Binding Source={x:Static wgs:AppInfo.IsDeveloperSandbox}, Converter={StaticResource BoolToVis}}">
+                            <TextBlock Text="TEST SANDBOX  •  NO LIVE SERVERS" FontSize="11"
+                                       FontWeight="SemiBold" Foreground="#FFCB6B"/>
+                        </Border>
                         <!-- Update available badge -->
                         <Border Visibility="{Binding UpdateAvailable, Converter={StaticResource BoolToVis}}"
                                 Background="#1a3a1a" BorderBrush="{StaticResource AccentGreenBrush}"
