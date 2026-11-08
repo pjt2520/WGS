@@ -59,5 +59,32 @@ Check("Valheim: uppercase TRUE matches launch behavior", valheim, "TRUE", true);
 // coincidentally called crossplay.
 Check("Counter-Strike 2: A2S remains enabled", new CS2Plugin(), "true", true);
 
+// Validate the developer sandbox selection without constructing ConfigService
+// or touching disks. Reading the private static path is intentionally a
+// lightweight regression test for the opt-in environment variable.
+var previousDevMode = Environment.GetEnvironmentVariable("TANGERANG_WGS_DEV");
+try
+{
+    Environment.SetEnvironmentVariable("TANGERANG_WGS_DEV", "1");
+    var dataFolder = typeof(ConfigService).GetField("DataDir",
+        BindingFlags.NonPublic | BindingFlags.Static)?.GetValue(null) as string;
+    if (dataFolder is not null
+        && string.Equals(Path.GetFileName(dataFolder),
+            "Tangerang_DevData", StringComparison.OrdinalIgnoreCase))
+    {
+        passed++;
+        Console.WriteLine("PASS Developer mode chooses isolated WGS data folder");
+    }
+    else
+    {
+        failed++;
+        Console.Error.WriteLine("FAIL Developer mode data directory isolation");
+    }
+}
+finally
+{
+    Environment.SetEnvironmentVariable("TANGERANG_WGS_DEV", previousDevMode);
+}
+
 Console.WriteLine($"Results: {passed} passed, {failed} failed.");
 return failed == 0 ? 0 : 1;
