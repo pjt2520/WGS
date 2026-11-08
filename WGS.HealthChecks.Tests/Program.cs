@@ -1,0 +1,63 @@
+using System.Reflection;
+using WGS.Games;
+using WGS.Models;
+using WGS.Services;
+
+// Tangerang regression checks for the Valheim crossplay freeze-alert guard.
+// This is deliberately an executable with no new NuGet dependencies.
+// It never launches a game server, connects to PlayFab, or accesses saved worlds.
+//
+// Reflection is limited to the private policy predicate. If that method is
+// refactored, change this test to use the replacement decision point.
+var policy = typeof(ServerHealthService).GetMethod(
+    "CanHealthCheck", BindingFlags.Static | BindingFlags.NonPublic)
+    ?? throw new InvalidOperationException("CanHealthCheck predicate not found.");
+
+int passed = 0;
+int failed = 0;
+
+void Check(string scenario, IGamePlugin plugin, string? crossplay, bool expected)
+{
+    var server = new GameServer
+    {
+        GameId = plugin.GameId,
+        ServerPort = 2456
+    };
+    if (crossplay is not null)
+        server.GameSpecificSettings["crossplay"] = crossplay;
+
+    var result = (bool)(policy.Invoke(null, [server, plugin])
+        ?? throw new InvalidOperationException("Health policy returned null."));
+
+    if (result == expected)
+    {
+        passed++;
+        Console.WriteLine($"PASS {scenario}");
+    }
+    else
+    {
+        failed++;
+        Console.Error.WriteLine(
+            $"FAIL {scenario}: expected health probe={expected}, actual={result}");
+    }
+}
+
+var valheim = new ValheimPlugin();
+// A PlayFab Valheim session must NOT be sent an A2S freeze check.
+Check("Valheim: crossplay=true skips A2S freeze probe", valheim, "true", false);
+
+// The Steam-backed modes must preserve existing active monitoring.
+Check("Valheim: crossplay=false retains A2S probe", valheim, "false", true);
+Check("Valheim: absent crossplay setting retains A2S probe", valheim, null, true);
+Check("Valheim: blank crossplay setting retains A2S probe", valheim, "", true);
+
+// The actual launcher checks the literal value 'true', not case-insensitively.
+// Thus uppercase TRUE does not produce -crossplay and should keep A2S checks.
+Check("Valheim: uppercase TRUE matches launch behavior", valheim, "TRUE", true);
+
+// Other games still use their normal A2S checks, even if a custom setting is
+// coincidentally called crossplay.
+Check("Counter-Strike 2: A2S remains enabled", new CS2Plugin(), "true", true);
+
+Console.WriteLine($"Results: {passed} passed, {failed} failed.");
+return failed == 0 ? 0 : 1;
