@@ -1616,17 +1616,15 @@
                                 <Border Grid.Row="0" Padding="16,8" Background="{StaticResource BgSurfaceBrush}"
                                         BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,0,0,1">
                                     <StackPanel Orientation="Horizontal">
-                                        <TextBlock FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center">
-                                            <Run Text="{Binding OnlinePlayers.Count, Mode=OneWay}"/>
-                                            <Run Text=" players online"/>
-                                        </TextBlock>
+                                        <TextBlock Text="{Binding PlayerListHeading}" FontSize="13"
+                                                   FontWeight="SemiBold" VerticalAlignment="Center"/>
                                         <TextBlock Text="  • updates every 15 s" FontSize="11"
                                                    Foreground="{StaticResource TextMutedBrush}" VerticalAlignment="Center"/>
                                     </StackPanel>
                                 </Border>
                                 <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Padding="16,8">
                                     <StackPanel>
-                                        <TextBlock Text="No players online."
+                                        <TextBlock Text="{Binding PlayerListEmptyText}"
                                                    FontSize="12" Foreground="{StaticResource TextMutedBrush}"
                                                    Visibility="{Binding OnlinePlayers.Count,
                                                        Converter={StaticResource ZeroToVis}, Mode=OneWay}"/>
