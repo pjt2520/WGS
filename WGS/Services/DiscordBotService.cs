@@ -98,6 +98,12 @@ public class DiscordBotService : IDisposable
 
     // Servers are set externally by MainViewModel so the bot can look them up
     public Func<IEnumerable<GameServer>>? GetServers { get; set; }
+    /// <summary>
+    /// Read-only lookup into the current Valheim process tracker. Join codes
+    /// live in memory and rotate with PlayFab sessions; they must not be saved
+    /// to JSON alongside bot settings or copied from stale console history.
+    /// </summary>
+    public Func<string, string?>? GetCurrentValheimJoinCode { get; set; }
     public Func<string, Task>?            StartServer { get; set; }
     public Func<string, Task>?            StopServer  { get; set; }
     public Func<string, Task>?            RestartServer { get; set; }
@@ -384,7 +390,12 @@ public class DiscordBotService : IDisposable
             var plugin = GameRegistry.All.FirstOrDefault(p => p.GameId == s.GameId);
             var port   = (plugin?.UseGamePortForConnect == true || s.QueryPort == 0) ? s.ServerPort : s.QueryPort;
             var line1  = online ? $"{onlineText} — {(s.PlayerCountUnknown ? "?" : s.CurrentPlayers.ToString())}/{s.MaxPlayers} players" : offlineText;
-            var value  = $"{line1}\nConnect: `{ip}:{port}`";
+            // A PlayFab server should not advertise 127.0.0.1 as a public
+            // connection address. If the owner explicitly opts in, show the
+            // current session's code on the existing in-place Discord board.
+            // There is no separate channel-spamming announcement message.
+            var value  = $"{line1}\n" + BuildConnectLine(s, ip, port,
+                GetCurrentValheimJoinCode?.Invoke(s.Id));
             return new { name = s.DisplayName, value, inline = true };
         }).ToArray();
 
@@ -399,6 +410,32 @@ public class DiscordBotService : IDisposable
         if (IsValidHttpUrl(StatusThumbnailUrl)) embed["thumbnail"] = new { url = StatusThumbnailUrl };
         if (IsValidHttpUrl(StatusImageUrl))     embed["image"]     = new { url = StatusImageUrl };
         return embed;
+    }
+
+    /// <summary>
+    /// Pure formatter for the Discord board connection line.
+    /// - A code is shown only for an explicitly opted-in, *running* Valheim
+    ///   server with the literal crossplay=true launch setting.
+    /// - Only a validated six-digit PlayFab registration code is accepted.
+    /// - Other games and non-crossplay Valheim keep their existing IP/port.
+    /// - Stopped/unknown states never reuse a code from a prior session.
+    /// Keeping this function pure lets the regression executable test privacy
+    /// rules without authenticating a Discord bot or creating servers.
+    /// </summary>
+    internal static string BuildConnectLine(GameServer server, string ip, int port, string? joinCode)
+    {
+        bool playFab = server.GameId == "valheim"
+            && server.GameSpecificSettings.TryGetValue("crossplay", out var crossplay)
+            && crossplay == "true";
+
+        if (!playFab) return $"Connect: `{ip}:{port}`";
+        if (server.Status != ServerStatus.Running)
+            return "Connect: PlayFab (server offline)";
+        if (!server.DiscordPublishJoinCode)
+            return "Connect: PlayFab crossplay (code not shared)";
+        if (joinCode is null || !System.Text.RegularExpressions.Regex.IsMatch(joinCode, @"^\d{6}$"))
+            return "Connect: PlayFab (join code pending)";
+        return $"PlayFab join code: `{joinCode}`";
     }
 
     /// <summary>Parses a "#RRGGBB" hex color into Discord's decimal embed color, falling back to the original blue on anything unparseable.</summary>

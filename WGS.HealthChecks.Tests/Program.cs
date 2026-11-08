@@ -118,5 +118,76 @@ SteamCase("SteamCMD doesn't retry a different app error",
 SteamCase("SteamCMD doesn't retry a subscription error",
     "ERROR! Failed to install app '896660' (No subscription)", 896660, false);
 
+// Discord status-board privacy regression tests. These exercise the pure
+// formatter without loading bot credentials or making any network requests.
+// A six-digit PlayFab code must never be published unless the server owner
+// opted in AND this is a currently running Valheim crossplay server.
+var connectFormatter = typeof(DiscordBotService).GetMethod(
+    "BuildConnectLine", BindingFlags.Static | BindingFlags.NonPublic)
+    ?? throw new InvalidOperationException("Discord PlayFab formatter not found.");
+
+void DiscordCase(string scenario, bool running, bool crossplay,
+    bool publish, string? code, bool expectCode, bool expectIp)
+{
+    var server = new GameServer
+    {
+        GameId = "valheim",
+        Status = running ? ServerStatus.Running : ServerStatus.Stopped,
+        DiscordPublishJoinCode = publish,
+        ServerPort = 2466
+    };
+    server.GameSpecificSettings["crossplay"] = crossplay ? "true" : "false";
+
+    var output = (string)(connectFormatter.Invoke(null,
+        [server, "198.51.100.7", 2466, code]) ?? "");
+    var codeShown = output.Contains("032292", StringComparison.Ordinal);
+    var ipShown = output.Contains("198.51.100.7", StringComparison.Ordinal);
+
+    if (codeShown == expectCode && ipShown == expectIp)
+    {
+        passed++;
+        Console.WriteLine("PASS " + scenario);
+    }
+    else
+    {
+        failed++;
+        Console.Error.WriteLine($"FAIL {scenario}: {output}");
+    }
+}
+
+DiscordCase("Discord does not expose code by default",
+    true, true, false, "032292", false, false);
+DiscordCase("Discord shows explicitly opted-in current PlayFab code",
+    true, true, true, "032292", true, false);
+DiscordCase("Discord conceals code when the server stops",
+    false, true, true, "032292", false, false);
+DiscordCase("Discord waits when PlayFab registration is not ready",
+    true, true, true, null, false, false);
+DiscordCase("Discord rejects malformed or injected join code",
+    true, true, true, "032292\n@everyone", false, false);
+DiscordCase("Discord retains IP for ordinary Steam Valheim",
+    true, false, true, "032292", false, true);
+
+var nonValheim = new GameServer
+{
+    GameId = "cs2",
+    Status = ServerStatus.Running,
+    DiscordPublishJoinCode = true
+};
+nonValheim.GameSpecificSettings["crossplay"] = "true";
+var otherConnect = (string)(connectFormatter.Invoke(null,
+    [nonValheim, "198.51.100.7", 27015, "032292"]) ?? "");
+if (otherConnect.Contains("198.51.100.7", StringComparison.Ordinal)
+    && !otherConnect.Contains("032292", StringComparison.Ordinal))
+{
+    passed++;
+    Console.WriteLine("PASS Discord does not publish PlayFab code for unrelated games");
+}
+else
+{
+    failed++;
+    Console.Error.WriteLine("FAIL Discord changed non-Valheim connect line");
+}
+
 Console.WriteLine($"Results: {passed} passed, {failed} failed.");
 return failed == 0 ? 0 : 1;
