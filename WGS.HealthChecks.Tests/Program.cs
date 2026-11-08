@@ -86,5 +86,37 @@ finally
     Environment.SetEnvironmentVariable("TANGERANG_WGS_DEV", previousDevMode);
 }
 
+// SteamCMD may update itself during a brand-new install and return this
+// specific app-catalogue error. The installer retries once for this case only.
+// Do not turn unrelated failures (permissions, disks, subscription) into
+// repeated download attempts.
+var isMissing = typeof(SteamCmdService).GetMethod(
+    "IsMissingAppConfiguration", BindingFlags.NonPublic | BindingFlags.Static)
+    ?? throw new InvalidOperationException("SteamCMD metadata error classifier not found.");
+
+void SteamCase(string name, string message, int appId, bool expected)
+{
+    var actual = (bool)(isMissing.Invoke(null, [message, appId]) ?? false);
+    if (actual == expected)
+    {
+        passed++;
+        Console.WriteLine("PASS " + name);
+    }
+    else
+    {
+        failed++;
+        Console.Error.WriteLine("FAIL " + name);
+    }
+}
+
+SteamCase("SteamCMD recognizes matching app metadata failure",
+    "ERROR! Failed to install app '896660' (Missing configuration)", 896660, true);
+SteamCase("SteamCMD doesn't retry a disk write failure",
+    "ERROR! Failed to install app '896660' (Disk write failure)", 896660, false);
+SteamCase("SteamCMD doesn't retry a different app error",
+    "ERROR! Failed to install app '2394010' (Missing configuration)", 896660, false);
+SteamCase("SteamCMD doesn't retry a subscription error",
+    "ERROR! Failed to install app '896660' (No subscription)", 896660, false);
+
 Console.WriteLine($"Results: {passed} passed, {failed} failed.");
 return failed == 0 ? 0 : 1;
