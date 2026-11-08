@@ -89,6 +89,13 @@ public partial class ServerViewModel : BaseViewModel, IDisposable
     // Join codes are generated afresh on every PlayFab session. This is
     // read from the server's live console tracker, never a stored/stale value.
     [ObservableProperty] private string _valheimJoinCode = "Waiting for PlayFab...";
+    // The Copy button remains disabled until a fresh session has registered
+    // a six-digit invite. Status changes can invalidate it immediately.
+    public bool CanCopyValheimJoinCode => IsRunning
+        && System.Text.RegularExpressions.Regex.IsMatch(ValheimJoinCode, @"^\d{6}$");
+    partial void OnValheimJoinCodeChanged(string value)
+        => OnPropertyChanged(nameof(CanCopyValheimJoinCode));
+
     public bool IsValheimCrossplay => Server.GameId == "valheim"
         && Server.GameSpecificSettings.TryGetValue("crossplay", out var crossplay)
         && crossplay == "true";
@@ -2180,6 +2187,7 @@ public partial class ServerViewModel : BaseViewModel, IDisposable
         {
             RefreshStatus();
             RefreshValheimJoinCode();
+            OnPropertyChanged(nameof(CanCopyValheimJoinCode));
         });
         _ = _notifications.NotifyServerStatusAsync(Server, status);
 
