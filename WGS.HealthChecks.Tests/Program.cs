@@ -69,7 +69,7 @@ try
     var dataFolder = typeof(ConfigService).GetField("DataDir",
         BindingFlags.NonPublic | BindingFlags.Static)?.GetValue(null) as string;
     if (dataFolder is not null
-        && string.Equals(Path.GetFileName(dataFolder),
+        && string.Equals(System.IO.Path.GetFileName(dataFolder),
             "Tangerang_DevData", StringComparison.OrdinalIgnoreCase))
     {
         passed++;
