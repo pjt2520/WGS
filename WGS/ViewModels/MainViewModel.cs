@@ -271,6 +271,12 @@ public partial class MainViewModel : BaseViewModel
 
         // Wire up Discord bot callbacks — same Dispatcher fix as WebAPI
         _bot.GetServers    = () => Servers.Select(v => v.Server);
+        // Discord status embeds run on a background timer. Read the current
+        // in-memory PlayFab session (not UI text or a persisted invite code).
+        // The Discord formatter verifies the server is Running, crossplay is
+        // enabled, and its owner explicitly opted into sharing the code.
+        _bot.GetCurrentValheimJoinCode = id =>
+            _manager.GetInstance(id)?.ValheimPlayers?.GetCurrentJoinCode();
         _bot.StartServer   = id => DispatchCommand(() => { var vm = FindServer(id); return vm != null ? vm.StartCommand.ExecuteAsync(null)        : Task.CompletedTask; });
         _bot.StopServer    = id => DispatchCommand(() => { var vm = FindServer(id); return vm != null ? vm.StopCommand.ExecuteAsync(null)         : Task.CompletedTask; });
         _bot.RestartServer = id => DispatchCommand(() => { var vm = FindServer(id); return vm != null ? vm.RestartCommand.ExecuteAsync(null)      : Task.CompletedTask; });
