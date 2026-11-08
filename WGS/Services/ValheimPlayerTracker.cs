@@ -3,19 +3,17 @@ using System.Text.RegularExpressions;
 namespace WGS.Services;
 
 /// <summary>
-/// Observes player identities from Valheim's unmodified dedicated-server console.
+/// Reads vanilla Valheim server log messages for PlayFab/Steam player
+/// observations and the *current* session's six-digit PlayFab join code.
 ///
-/// Steam and PlayFab write different connection messages. In particular, PlayFab
-/// exposes Xbox/PlayStation/platform identities separately from the character name.
-/// We correlate these best-effort using the order of pending connection events.
-/// A name is only shown after "Got character ZDOID from ..." is observed.
+/// Neither the player list nor a lobby-reported "now N player(s)" is a
+/// reliable, authoritative census in crossplay mode. The caller must keep
+/// PlayerCountUnknown=true when falling back to this parser.
 ///
-/// IMPORTANT: This is NOT an authoritative player counter. PlayFab's generic
-/// "Player connection lost server" line does not identify the departing player;
-/// it even sometimes says "now 1 player(s)" after the only player drops.
-/// When such a line appears we discard all PlayFab observations rather than
-/// report a stale or fictitiously exact player count. Callers MUST treat the
-/// resulting list as partial / unverified, not evidence that the server is empty.
+/// Identity safety: "Got character ZDOID from NAME" contains no socket ID.
+/// Attach a name to a platform ID only when exactly one unnamed socket
+/// exists. With overlapping joins, retain names as anonymous observations
+/// rather than inventing a correlation between an Xbox/PS5 ID and a Viking.
 /// </summary>
 public sealed class ValheimPlayerTracker
 {
@@ -31,13 +29,9 @@ public sealed class ValheimPlayerTracker
         RegexOptions.Compiled);
     private static readonly Regex Character = new(
         @"Got character ZDOID from (.+?) :", RegexOptions.Compiled);
-
-    // Console streams and WGS's 15-second refresh can run on different threads.
-    // A single lock makes a connection/name/disconnect transition atomic.
-    private readonly object _gate = new();
-    private readonly Dictionary<string, Peer> _peers = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Queue<string> _pending = new();
-    private readonly HashSet<string> _pendingSet = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly Regex Registration = new(
+        @"Session ""[^""]+"" registered with join code (\d{6})(?!\d)",
+        RegexOptions.Compiled);
 
     private sealed class Peer
     {
@@ -48,41 +42,58 @@ public sealed class ValheimPlayerTracker
         public string? CharacterName { get; set; }
     }
 
+    private readonly object _gate = new();
+    private readonly Dictionary<string, Peer> _peers = new(StringComparer.OrdinalIgnoreCase);
+    // A character-name event without an unambiguous peer is still a
+    // useful *observed name*. Never fabricate a platform ID for it.
+    private readonly Dictionary<string, DateTime> _unattributed = new(StringComparer.OrdinalIgnoreCase);
+    private string? _currentJoinCode;
+
+    public string? GetCurrentJoinCode()
+    {
+        lock (_gate) return _currentJoinCode;
+    }
+
     public void OnLogLine(string line)
     {
         lock (_gate)
         {
-            // Starting a new PlayFab lobby establishes a new session boundary.
-            // Do not carry characters from a previous session into the new one.
+            // A new PlayFab session replaces the old join code and identities.
+            // Do not display a stale invite code during a PlayFab restart.
             if (line.Contains("New session server ", StringComparison.Ordinal))
             {
                 _peers.Clear();
-                _pending.Clear();
-                _pendingSet.Clear();
+                _unattributed.Clear();
+                _currentJoinCode = null;
+                return;
+            }
+
+            var registration = Registration.Match(line);
+            if (registration.Success)
+            {
+                _currentJoinCode = registration.Groups[1].Value;
                 return;
             }
 
             var steam = SteamConnect.Match(line);
             if (steam.Success)
             {
-                EnqueueNewPeer("steam/" + steam.Groups[1].Value, false);
+                AddPeer("steam/" + steam.Groups[1].Value, isPlayFab: false);
                 return;
             }
 
-            var playFab = PlayFabConnect.Match(line);
-            if (playFab.Success)
+            var playfab = PlayFabConnect.Match(line);
+            if (playfab.Success)
             {
-                EnqueueNewPeer("playfab/" + playFab.Groups[1].Value, true);
+                AddPeer("playfab/" + playfab.Groups[1].Value, isPlayFab: true);
                 return;
             }
 
-            // A platform ID can arrive separately, even before a recorded
-            // "child connected" message. Never count it as a named player.
             var platform = PlayFabPlatform.Match(line);
             if (platform.Success)
             {
                 var key = "playfab/" + platform.Groups[1].Value;
-                EnqueueNewPeer(key, true);
+                AddPeer(key, isPlayFab: true);
                 _peers[key].PlatformId = platform.Groups[2].Value;
                 return;
             }
@@ -90,19 +101,19 @@ public sealed class ValheimPlayerTracker
             var character = Character.Match(line);
             if (character.Success)
             {
-                // Character lines contain names but no connection IDs.
-                // Match only the oldest still-live, unnamed connection.
-                // Under simultaneous joins, the association is uncertain.
-                while (_pending.Count > 0)
-                {
-                    var key = _pending.Dequeue();
-                    _pendingSet.Remove(key);
-                    if (!_peers.TryGetValue(key, out var peer) || peer.CharacterName != null)
-                        continue;
+                var name = character.Groups[1].Value.Trim();
+                if (name.Length == 0) return;
+                // Replayed/duplicate character events are not another player.
+                if (_unattributed.ContainsKey(name)
+                    || _peers.Values.Any(p => string.Equals(p.CharacterName,
+                        name, StringComparison.OrdinalIgnoreCase)))
+                    return;
 
-                    peer.CharacterName = character.Groups[1].Value.Trim();
-                    break;
-                }
+                var candidates = _peers.Values.Where(p => p.CharacterName == null).ToArray();
+                if (candidates.Length == 1)
+                    candidates[0].CharacterName = name;
+                else
+                    _unattributed[name] = DateTime.UtcNow;
                 return;
             }
 
@@ -110,71 +121,61 @@ public sealed class ValheimPlayerTracker
             if (closed.Success)
             {
                 _peers.Remove("steam/" + closed.Groups[1].Value);
-                RebuildPendingQueue();
+                // Anonymous observations may have belonged to the socket
+                // that just closed. Discard them rather than show stale names.
+                _unattributed.Clear();
                 return;
             }
 
             if (line.Contains("Player connection lost server ", StringComparison.Ordinal))
             {
-                // This PlayFab line has no connection ID. A "now N player(s)"
-                // suffix is not reliable after network errors (observed 4098).
-                // Clear all PlayFab peers to avoid showing departed players as
-                // definitely online; retain unrelated Steam observations.
+                // The PlayFab loss line omits the player ID and may still say
+                // "now 1 player(s)" after the sole player disconnects.
+                // Since we cannot identify which connection was lost, all
+                // PlayFab identities and name-only observations become unknown.
                 foreach (var key in _peers.Values.Where(p => p.IsPlayFab)
-                             .Select(p => p.Key).ToArray())
+                         .Select(p => p.Key).ToArray())
                     _peers.Remove(key);
-                RebuildPendingQueue();
-                return;
+                _unattributed.Clear();
             }
         }
     }
 
-    // Remove stale pending IDs as soon as a connection is lost. Otherwise a
-    // rapid reconnect reusing the same PlayFab remote ID could consume an old
-    // queue entry and accidentally attach the next character to the wrong peer.
-    private void RebuildPendingQueue()
+    private void AddPeer(string key, bool isPlayFab)
     {
-        var live = _pending.Where(key => _peers.ContainsKey(key)).ToArray();
-        _pending.Clear();
-        _pendingSet.Clear();
-        foreach (var key in live)
-            if (_pendingSet.Add(key)) _pending.Enqueue(key);
-    }
-
-    private void EnqueueNewPeer(string key, bool playFab)
-    {
-        // Duplicate log messages and repeated platform-ID notifications must
-        // not create duplicate players or advance the pending-name queue.
+        // Repeated socket and platform notifications must be idempotent.
         if (_peers.ContainsKey(key)) return;
-
         _peers[key] = new Peer
         {
             Key = key,
-            IsPlayFab = playFab,
+            IsPlayFab = isPlayFab,
             ConnectedUtc = DateTime.UtcNow
         };
-        if (_pendingSet.Add(key))
-            _pending.Enqueue(key);
     }
 
     /// <summary>
-    /// Returns identities whose character-name event has been observed.
-    /// This list may omit unnamed connections and may miss unlogged departures.
-    /// For PlayFab use, display it as "observed", never as an exact count.
+    /// Observed names only; caller MUST NOT infer an exact player count from
+    /// this list when crossplay is enabled. Empty means "none observed".
+    /// An empty SteamId indicates name seen but platform not established.
     /// </summary>
     public List<(string Name, string SteamId, int ConnectedSeconds)> GetKnownPlayers()
     {
         lock (_gate)
         {
-            return _peers.Values
+            var now = DateTime.UtcNow;
+            var namedPeers = _peers.Values
                 .Where(p => !string.IsNullOrWhiteSpace(p.CharacterName))
                 .Select(p => (
                     Name: p.CharacterName!,
-                    // OnlinePlayer.SteamId is also used for non-Steam identities.
-                    SteamId: p.PlatformId ?? p.Key.Replace("steam/", ""),
-                    ConnectedSeconds: Math.Max(0,
-                        (int)(DateTime.UtcNow - p.ConnectedUtc).TotalSeconds)))
-                .ToList();
+                    SteamId: p.PlatformId ?? (p.IsPlayFab ? p.Key : p.Key["steam/".Length..]),
+                    ConnectedSeconds: Math.Max(0, (int)(now - p.ConnectedUtc).TotalSeconds)));
+
+            var namesWithoutIds = _unattributed.Select(kvp => (
+                Name: kvp.Key,
+                SteamId: string.Empty,
+                ConnectedSeconds: Math.Max(0, (int)(now - kvp.Value).TotalSeconds)));
+
+            return namedPeers.Concat(namesWithoutIds).ToList();
         }
     }
 }
