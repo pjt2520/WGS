@@ -1587,6 +1587,7 @@
                                                FontWeight="SemiBold" FontSize="13" VerticalAlignment="Center"
                                                Foreground="{StaticResource TextPrimaryBrush}" Margin="0,0,8,0"/>
                                     <Button Content="Copy code" Style="{StaticResource GhostButton}"
+                                            IsEnabled="{Binding CanCopyValheimJoinCode}"
                                             Command="{Binding CopyValheimJoinCodeCommand}"/>
                                 </StackPanel>
                             </StackPanel>
