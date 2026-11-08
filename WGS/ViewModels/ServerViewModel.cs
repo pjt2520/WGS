@@ -85,6 +85,31 @@ public partial class ServerViewModel : BaseViewModel, IDisposable
     // This text is deliberately separate from OnlinePlayers.Count.
     [ObservableProperty] private string _playerListHeading = "Player count unavailable";
     [ObservableProperty] private string _playerListEmptyText = "No player information available.";
+
+    // Join codes are generated afresh on every PlayFab session. This is
+    // read from the server's live console tracker, never a stored/stale value.
+    [ObservableProperty] private string _valheimJoinCode = "Waiting for PlayFab...";
+    public bool IsValheimCrossplay => Server.GameId == "valheim"
+        && Server.GameSpecificSettings.TryGetValue("crossplay", out var crossplay)
+        && crossplay == "true";
+
+    [RelayCommand]
+    private void CopyValheimJoinCode()
+    {
+        // Do not copy placeholders or an invite from a stopped server.
+        if (IsRunning && System.Text.RegularExpressions.Regex.IsMatch(
+                ValheimJoinCode, @"^\d{6}$"))
+            System.Windows.Clipboard.SetText(ValheimJoinCode);
+    }
+
+    private void RefreshValheimJoinCode()
+    {
+        if (!IsValheimCrossplay) return;
+        var code = IsRunning
+            ? _manager.GetInstance(Server.Id)?.ValheimPlayers?.GetCurrentJoinCode()
+            : null;
+        ValheimJoinCode = code ?? (IsRunning ? "Waiting for PlayFab..." : "Server stopped");
+    }
     [ObservableProperty] private List<Services.PlayerSession> _playerHistory  = [];
     [ObservableProperty] private List<Services.PlayerStats>   _playerStatsList = [];
     [ObservableProperty] private List<Services.PlayerStats>   _mostActivePlayers = [];
@@ -593,6 +618,7 @@ public partial class ServerViewModel : BaseViewModel, IDisposable
 
         RefreshStatus();
         RefreshBackups();
+        RefreshValheimJoinCode();
 
         // If the server was already running when this ViewModel was created (e.g. reattached
         // to a process that survived a WGS restart), the StatusChanged(Running) event already
@@ -2134,6 +2160,12 @@ public partial class ServerViewModel : BaseViewModel, IDisposable
         WpfApplication.Current?.Dispatcher?.Invoke(() =>
         {
             Log.Add(msg);
+            // ServerManagerService parses the line before raising LogReceived.
+            // Refresh only when the session starts or receives a join code.
+            if (IsValheimCrossplay
+                && (msg.Text.Contains("New session server ", StringComparison.Ordinal)
+                    || msg.Text.Contains("registered with join code ", StringComparison.Ordinal)))
+                RefreshValheimJoinCode();
             while (Log.Count > MaxConsoleLines)
                 Log.RemoveAt(0);
             if (!string.IsNullOrWhiteSpace(ConsoleFilter))
@@ -2144,7 +2176,11 @@ public partial class ServerViewModel : BaseViewModel, IDisposable
     private void OnStatusChanged(string serverId, ServerStatus status)
     {
         if (serverId != Server.Id) return;
-        WpfApplication.Current?.Dispatcher?.Invoke(RefreshStatus);
+        WpfApplication.Current?.Dispatcher?.Invoke(() =>
+        {
+            RefreshStatus();
+            RefreshValheimJoinCode();
+        });
         _ = _notifications.NotifyServerStatusAsync(Server, status);
 
         var actionText = status switch
