@@ -31,6 +31,36 @@ The health-policy test runner includes six scenarios. Crossplay tests include
 synthetic identity events, recovery, ambiguous disconnects, concurrent joins,
 and session join-code rotation with leading zero preservation.
 
+## Isolated developer UI (optional smoke test)
+
+WGS normally uses a machine-wide `WGS_SingleInstance_Mutex`, which prevents
+two regular dashboards from running at the same time. **Do not bypass this by
+launching a second stock WGS instance.**
+
+This fork provides a deliberate, opt-in sandbox mode via
+`scripts/Start-TangerangDev.ps1`. It sets `TANGERANG_WGS_DEV=1` only for the
+development executable, changing the app's mutex and data directories:
+
+- `Tangerang_DevData` (not the installed WGS_Data or old %AppData% data)
+- `Tangerang_DevServers` (not the production game installation)
+- `Tangerang_DevBackups` (not production backups)
+
+At startup, developer mode also disables Web API, slave/service mode, and UPnP.
+Do not configure its new servers to point to the existing live game or use
+its existing ports. The developer app starts with **no server entries**.
+
+To open **only** the isolated UI after the tests pass:
+
+```powershell
+Set-Location 'C:\Dev\TangerangWGS'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File '.\scripts\Start-TangerangDev.ps1'
+```
+
+Do not click Install/Update/Start for any real game in that development UI.
+Without a separate test Valheim world/server there will be no live join code;
+the UI should show its waiting/stopped state. Test live connections only after
+we establish separate test ports, data paths and a restore procedure.
+
 ## No live deployment yet
 
 Do **not** launch the development WGS executable against the live install.
