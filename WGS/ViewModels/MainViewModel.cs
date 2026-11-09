@@ -209,6 +209,24 @@ public partial class MainViewModel : BaseViewModel
 
         manager.PortsReassigned += srv => Save();
 
+        // The server process reaching Running does not mean Valheim has a
+        // joinable PlayFab lobby yet. Wait for its registration log line,
+        // which ServerManagerService has already passed to the tracker.
+        // Marshal the server collection lookup to WPF's dispatcher because
+        // process output arrives on a background thread.
+        manager.LogReceived += (id, msg) =>
+        {
+            if (!msg.Text.Contains("registered with join code ", StringComparison.Ordinal))
+                return;
+
+            WpfApplication.Current?.Dispatcher?.BeginInvoke(new Action(() =>
+            {
+                var server = Servers.FirstOrDefault(v => v.Server.Id == id)?.Server;
+                var code = _manager.GetInstance(id)?.ValheimPlayers?.GetCurrentJoinCode();
+                if (server != null) _ = _bot.AnnouncePlayFabReadyAsync(server, code);
+            }));
+        };
+
         manager.StatusChanged += (id, status) =>
         {
             WpfApplication.Current?.Dispatcher?.Invoke(() =>
