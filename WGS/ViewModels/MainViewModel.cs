@@ -223,6 +223,10 @@ public partial class MainViewModel : BaseViewModel
             var server = Servers.FirstOrDefault(v => v.Server.Id == id)?.Server;
             if (server != null)
             {
+                // Optional Tangerang Announcement Center. This dispatches a
+                // Discord notice without blocking server state transitions.
+                // When disabled (the default) it produces no traffic.
+                _ = _bot.AnnounceLifecycleAsync(server, status);
                 if (status == ServerStatus.Running)
                 {
                     if (_config.EnableUPnP) _ = _upnp.AddPortsForServerAsync(server);
@@ -763,7 +767,7 @@ public partial class MainViewModel : BaseViewModel
     {
         var vm = new ServerViewModel(srv, _backend, _manager, _steamCmd, _backup, _notifications, _perfMonitor, _config, _mods,
                _sourceMod, _configEditor, _playerStats, _perfHistory, _workshop, _workshopDb, _templates, _scheduler,
-               _network, _groupBans, _hygiene, _presets, _wakeOnDemand);
+               _network, _groupBans, _hygiene, _presets, _wakeOnDemand, _bot);
         vm.BatchSelectionChanged = () => OnPropertyChanged(nameof(BatchSelectedCount));
         return vm;
     }
