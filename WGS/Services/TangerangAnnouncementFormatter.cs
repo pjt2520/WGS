@@ -106,11 +106,32 @@ public static class TangerangAnnouncementFormatter
         var name = Clean(server.DisplayName);
         return status switch
         {
-            ServerStatus.Running => $"🟢 **{name}** is online. Players can join.",
+            ServerStatus.Running => $"🟢 **{name}** server process started. Game initialization may still be in progress.",
             ServerStatus.Stopped => $"⚫ **{name}** is offline.",
             ServerStatus.Error   => $"🔴 **{name}** encountered a server error.",
             _ => string.Empty
         };
+    }
+
+    /// <summary>
+    /// Announce readiness only after Valheim's registered PlayFab session
+    /// line has been parsed by its live tracker. The join code is included
+    /// only when the *separate* DiscordPublishJoinCode checkbox is enabled.
+    /// A placeholder/malformed/stale code must never be announced.
+    /// </summary>
+    public static string PlayFabReadyMessage(GameServer server, string? joinCode)
+    {
+        if (server.GameId != "valheim" || server.Status != ServerStatus.Running
+            || !server.GameSpecificSettings.TryGetValue("crossplay", out var crossplay)
+            || crossplay != "true"
+            || string.IsNullOrEmpty(joinCode)
+            || !System.Text.RegularExpressions.Regex.IsMatch(joinCode, @"^\d{6}$"))
+            return string.Empty;
+
+        var message = $"🛡️ **{Clean(server.DisplayName)}** PlayFab session is ready for Xbox, PlayStation and PC crossplay.";
+        return server.DiscordPublishJoinCode
+            ? message + $"\n🔑 Join code: \`{joinCode}\`"
+            : message + "\nJoin code sharing is disabled for this server.";
     }
 
     public static string CustomMessage(GameServer server, string text)
