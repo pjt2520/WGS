@@ -15,17 +15,22 @@ untouched by GitHub changes.
    channel; show delivery status and a 15-second anti-spam cooldown.
 3. Opt-in lifecycle notifications for server Running / Stopped / Error.
    Repeated identical status events within 15 seconds are suppressed.
-4. A **warned restart** button, using the same graceful restart callback
+4. **PlayFab-ready notifications:** when a Valheim crossplay lobby actually
+   registers with PlayFab, the bot can announce that its session is ready.
+   A join code is included only if the server's separate "Show Valheim
+   PlayFab join code on Discord status board" toggle is also enabled.
+   Leading zeros are preserved; no registration means no announcement.
+5. A **warned restart** button, using the same graceful restart callback
    as normal WGS. It warns at the beginning, 60 seconds remaining when
    applicable, and 10 seconds remaining. Countdown: 30 to 600 seconds.
-5. A **Cancel countdown** button and `!cancelrestart` command.
-6. Discord chat commands for authorized admins:
+6. A **Cancel countdown** button and `!cancelrestart` command.
+7. Discord chat commands for authorized admins:
    - `!announce Tangerang Test | Server maintenance in 15 minutes`
    - `!restartwarn Tangerang Test | 90`
    - `!cancelrestart Tangerang Test`
-7. All public announcements suppress `allowed_mentions`: no @everyone,
+8. All public announcements suppress `allowed_mentions`: no @everyone,
    @here, user or role pings from remote message text.
-8. Existing Valheim join code on the live status board remains unchanged.
+9. Existing Valheim join code on the live status board remains unchanged.
 
 ## Configure the bot (required)
 
