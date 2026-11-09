@@ -84,7 +84,34 @@ public class DiscordBotService : IDisposable
     private readonly HashSet<string> _reportedStatusErrors = new();
     // Announcement Center: timers are cancelled on Stop/Dispose; no watchdog
     // restart will run later if WGS shuts down or the bot is reconfigured.
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, CancellationTokenSource>
+    private sealed class PendingWarnedRestart : IDisposable
+    {
+        public CancellationTokenSource Cancellation { get; }
+        public TangerangRestartGate Gate { get; } = new();
+        public DateTime? ServerStartedAt { get; }
+
+        public PendingWarnedRestart(CancellationTokenSource cancellation, DateTime? serverStartedAt)
+        {
+            Cancellation = cancellation;
+            ServerStartedAt = serverStartedAt;
+        }
+
+        public bool TryCancel()
+        {
+            if (!Gate.TryCancel()) return false;
+            try { Cancellation.Cancel(); }
+            catch (ObjectDisposedException) { }
+            return true;
+        }
+
+        public void Dispose()
+        {
+            Gate.Finish();
+            Cancellation.Dispose();
+        }
+    }
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, PendingWarnedRestart>
         _pendingWarnedRestarts = new();
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTimeOffset>
         _lastLifecycleAnnouncements = new();
@@ -194,7 +221,7 @@ public class DiscordBotService : IDisposable
         // Cancelling an authorized delayed restart must never leave a pending
         // action that could fire after this bot has been disabled or restarted.
         foreach (var countdown in _pendingWarnedRestarts.Values)
-            countdown.Cancel();
+            countdown.TryCancel();
         try { _loop?.Wait(2000); } catch { }
         try { _statusLoop?.Wait(2000); } catch { }
         try { _gatewayLoop?.Wait(2000); } catch { }
@@ -1127,22 +1154,24 @@ public class DiscordBotService : IDisposable
         if (!server.DiscordAnnouncementsEnabled || AnnouncementChannel(server) == null)
             return "Enable announcements and a separate channel first.";
 
-        var cts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
-        if (!_pendingWarnedRestarts.TryAdd(server.Id, cts))
+        var pending = new PendingWarnedRestart(
+            CancellationTokenSource.CreateLinkedTokenSource(_cts.Token),
+            server.LastStarted);
+        if (!_pendingWarnedRestarts.TryAdd(server.Id, pending))
         {
-            cts.Dispose();
+            pending.Dispose();
             return "A warned restart is already pending.";
         }
 
-        _ = Task.Run(() => ExecuteWarnedRestartAsync(server, seconds, cts));
+        _ = Task.Run(() => ExecuteWarnedRestartAsync(server, seconds, pending));
         return $"Warned restart requested for {server.DisplayName} ({seconds}s).";
     }
 
     public async Task<bool> CancelWarnedRestartAsync(GameServer server)
     {
-        if (!_pendingWarnedRestarts.TryRemove(server.Id, out var cts))
-            return false;
-        cts.Cancel();
+        if (!_pendingWarnedRestarts.TryGetValue(server.Id, out var pending)
+            || !pending.TryCancel()) return false;
+        _pendingWarnedRestarts.TryRemove(server.Id, out _);
         await PostAnnouncementAsync(server,
             $"✅ **{TangerangAnnouncementFormatter.Clean(server.DisplayName)}** scheduled restart cancelled.",
             CancellationToken.None);
@@ -1150,20 +1179,21 @@ public class DiscordBotService : IDisposable
     }
 
     private async Task ExecuteWarnedRestartAsync(
-        GameServer server, int seconds, CancellationTokenSource cts)
+        GameServer server, int seconds, PendingWarnedRestart pending)
     {
+        var token = pending.Cancellation.Token;
         try
         {
             int previous = seconds;
             foreach (int remaining in TangerangAnnouncementFormatter.RestartCheckpoints(seconds))
             {
-                await Task.Delay(TimeSpan.FromSeconds(previous - remaining), cts.Token);
-                cts.Token.ThrowIfCancellationRequested();
+                await Task.Delay(TimeSpan.FromSeconds(previous - remaining), token);
+                token.ThrowIfCancellationRequested();
                 if (server.Status != ServerStatus.Running
                     || !server.DiscordAnnouncementsEnabled) return;
 
                 var warning = TangerangAnnouncementFormatter.RestartWarning(server, remaining);
-                if (!await PostAnnouncementAsync(server, warning, cts.Token))
+                if (!await PostAnnouncementAsync(server, warning, token))
                 {
                     StatusChanged?.Invoke("⚠ Warned restart cancelled: Discord notice could not be delivered.");
                     return;
@@ -1171,9 +1201,14 @@ public class DiscordBotService : IDisposable
                 previous = remaining;
             }
 
-            await Task.Delay(TimeSpan.FromSeconds(previous), cts.Token);
-            cts.Token.ThrowIfCancellationRequested();
-            if (server.Status != ServerStatus.Running || !IsEnabled) return;
+            await Task.Delay(TimeSpan.FromSeconds(previous), token);
+            token.ThrowIfCancellationRequested();
+            if (server.Status != ServerStatus.Running || !IsEnabled
+                || server.LastStarted != pending.ServerStartedAt) return;
+
+            // A cancel racing the restart must either win before this gate
+            // or return "not cancelled" once execution has already begun.
+            if (!pending.Gate.TryBeginRestart()) return;
 
             // Use the same RestartServer callback as the existing admin button.
             // This goes through ServerViewModel.RestartCommand and its normal
@@ -1188,7 +1223,7 @@ public class DiscordBotService : IDisposable
         finally
         {
             _pendingWarnedRestarts.TryRemove(server.Id, out _);
-            cts.Dispose();
+            pending.Dispose();
         }
     }
 
