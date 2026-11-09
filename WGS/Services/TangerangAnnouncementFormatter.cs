@@ -137,3 +137,25 @@ public static class TangerangAnnouncementFormatter
         return points.Distinct().OrderDescending().ToArray();
     }
 }
+
+
+/// <summary>
+/// Atomic one-way state gate for warned restarts. A cancellation racing the
+/// countdown finishing must never claim success *after* restart execution has
+/// been authorized. Exactly one of TryCancel and TryBeginRestart can win.
+/// No game access or network calls; tested with deterministic state checks.
+/// </summary>
+public sealed class TangerangRestartGate
+{
+    // 0 = countdown active; 1 = restart executing; 2 = cancelled;
+    // 3 = completed / abandoned without a restart.
+    private int _state;
+
+    public bool TryCancel()
+        => Interlocked.CompareExchange(ref _state, 2, 0) == 0;
+
+    public bool TryBeginRestart()
+        => Interlocked.CompareExchange(ref _state, 1, 0) == 0;
+
+    public void Finish() => Interlocked.Exchange(ref _state, 3);
+}
