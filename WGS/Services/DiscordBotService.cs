@@ -82,6 +82,14 @@ public class DiscordBotService : IDisposable
     /// <summary>Tracks which (channel, HTTP status) error combos have already been reported, so a
     /// persistent problem (e.g. missing permissions) doesn't spam StatusChanged every 60 seconds.</summary>
     private readonly HashSet<string> _reportedStatusErrors = new();
+    // Announcement Center: timers are cancelled on Stop/Dispose; no watchdog
+    // restart will run later if WGS shuts down or the bot is reconfigured.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, CancellationTokenSource>
+        _pendingWarnedRestarts = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTimeOffset>
+        _lastLifecycleAnnouncements = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTimeOffset>
+        _lastManualAnnouncements = new();
 
     // ── Gateway (for button interactions only — everything else uses REST polling) ──
     private Task?  _gatewayLoop;
@@ -104,6 +112,30 @@ public class DiscordBotService : IDisposable
     /// to JSON alongside bot settings or copied from stale console history.
     /// </summary>
     public Func<string, string?>? GetCurrentValheimJoinCode { get; set; }
+
+    /// <summary>Optional additional announcement behavior, controlled by
+    /// GameServer.DiscordAnnouncementsEnabled and each channel's permissions.
+    /// This never exposes WGS admin commands to the public status channel.</summary>
+    public async Task<bool> AnnounceLifecycleAsync(GameServer server, ServerStatus status)
+    {
+        if (status is not (ServerStatus.Running or ServerStatus.Stopped or ServerStatus.Error))
+            return false;
+        if (!TangerangAnnouncementFormatter.MayAnnounce(server)) return false;
+
+        // Process exit, service restart and WGS status reattachment can produce
+        // repeated transitions. Avoid duplicate Discord posts within 15 seconds.
+        var key = server.Id + ":" + status;
+        var now = DateTimeOffset.UtcNow;
+        if (_lastLifecycleAnnouncements.TryGetValue(key, out var last)
+            && now - last < TimeSpan.FromSeconds(15)) return false;
+        _lastLifecycleAnnouncements[key] = now;
+
+        var text = TangerangAnnouncementFormatter.LifecycleMessage(server, status);
+        if (string.IsNullOrEmpty(text)) return false;
+        var sent = await PostAnnouncementAsync(server, text, _cts.Token);
+        if (!sent) _lastLifecycleAnnouncements.TryRemove(key, out _);
+        return sent;
+    }
     public Func<string, Task>?            StartServer { get; set; }
     public Func<string, Task>?            StopServer  { get; set; }
     public Func<string, Task>?            RestartServer { get; set; }
@@ -159,6 +191,10 @@ public class DiscordBotService : IDisposable
     public void Stop()
     {
         _cts.Cancel();
+        // Cancelling an authorized delayed restart must never leave a pending
+        // action that could fire after this bot has been disabled or restarted.
+        foreach (var countdown in _pendingWarnedRestarts.Values)
+            countdown.Cancel();
         try { _loop?.Wait(2000); } catch { }
         try { _statusLoop?.Wait(2000); } catch { }
         try { _gatewayLoop?.Wait(2000); } catch { }
@@ -746,13 +782,8 @@ public class DiscordBotService : IDisposable
         interaction["member"]?["user"]?["id"]?.ToString() ?? interaction["user"]?["id"]?.ToString() ?? "";
 
     private bool IsInteractionUserAllowed(JObject interaction)
-    {
-        if (string.IsNullOrWhiteSpace(AllowedUserIds)) return true;
-        var userId = InteractionUserId(interaction);
-        if (string.IsNullOrEmpty(userId)) return false;
-        var allowed = AllowedUserIds.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        return allowed.Contains(userId);
-    }
+        => TangerangAnnouncementFormatter.IsAuthorizedAdmin(
+            AllowedUserIds, InteractionUserId(interaction));
 
     /// <summary>Per-server narrowing on top of the general allow-list — see ServerRestrictedUserIds.
     /// True (allowed) when the user has no entry, or their entry's list is empty, or it contains
@@ -838,12 +869,10 @@ public class DiscordBotService : IDisposable
             if (isBot) continue;
             if (!content.StartsWith(CommandPrefix, StringComparison.OrdinalIgnoreCase)) continue;
 
-            // Authorization check
-            if (!string.IsNullOrWhiteSpace(AllowedUserIds))
-            {
-                var allowed = AllowedUserIds.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-                if (!allowed.Contains(authorId)) continue;
-            }
+            // Fail closed. Empty Admin User IDs grants NO text-command access
+            // (including start/stop/restart/cmd) even in a private channel.
+            if (!TangerangAnnouncementFormatter.IsAuthorizedAdmin(AllowedUserIds, authorId))
+                continue;
 
             await HandleCommand(id, authorId, content, ct);
         }
@@ -870,6 +899,9 @@ public class DiscordBotService : IDisposable
                 "update"  => await RunServerAction(args, authorId, UpdateServer,  "🔄 Updating",   "update"),
                 "backup"  => await RunServerAction(args, authorId, BackupServer,  "💾 Backing up", "backup"),
                 "cmd"     => await RunConsoleCmd(args, authorId),
+                "announce" => await RunAnnouncementCommandAsync(args, authorId, ct),
+                "restartwarn" => RunRestartWarningCommand(args, authorId),
+                "cancelrestart" => await CancelRestartWarningCommandAsync(args, authorId, ct),
                 _         => $"❓ Unknown command `{command}`. Type `{CommandPrefix}help`."
             };
 
