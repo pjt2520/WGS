@@ -1071,18 +1071,31 @@ public class DiscordBotService : IDisposable
         if (!server.DiscordAnnouncementsEnabled || AnnouncementChannel(server) == null)
             return "⚠ Enable announcements for this server and configure a dedicated announcement/status channel.";
 
-        // At most one manual broadcast every 15 seconds per server, regardless
-        // of the issuing admin. Prevent accidental rapid repeat/spam.
+        var sent = await AnnounceFromUiAsync(server, message, ct);
+        return sent ? $"📣 Announcement sent for **{server.DisplayName}**."
+                    : "⚠ Announcement not sent. Check bot, channel, opt-in and cooldown.";
+    }
+
+    /// <summary>
+    /// Local WGS UI uses exactly the same permissions/channel checks and
+    /// 15-second anti-spam rule as the private Discord !announce command.
+    /// The UI itself is already running locally, so it doesn't need a Discord
+    /// administrator ID; remote control commands still do.
+    /// </summary>
+    public async Task<bool> AnnounceFromUiAsync(
+        GameServer server, string message, CancellationToken ct = default)
+    {
+        var clean = TangerangAnnouncementFormatter.Clean(message);
+        if (clean.Length is < 1 or > 500 || !server.DiscordAnnouncementsEnabled
+            || AnnouncementChannel(server) == null)
+            return false;
         var now = DateTimeOffset.UtcNow;
         if (_lastManualAnnouncements.TryGetValue(server.Id, out var last)
-            && now - last < TimeSpan.FromSeconds(15))
-            return "⏳ Please allow 15 seconds between manual announcements.";
-
+            && now - last < TimeSpan.FromSeconds(15)) return false;
         var sent = await PostAnnouncementAsync(
-            server, TangerangAnnouncementFormatter.CustomMessage(server, message), ct);
+            server, TangerangAnnouncementFormatter.CustomMessage(server, clean), ct);
         if (sent) _lastManualAnnouncements[server.Id] = now;
-        return sent ? $"📣 Announcement sent for **{server.DisplayName}**."
-                    : "⚠ Announcement failed. Check channel permissions and bot status.";
+        return sent;
     }
 
     /// <summary>
@@ -1102,26 +1115,45 @@ public class DiscordBotService : IDisposable
             return "❌ Server not found. Usage: !restartwarn <server name> | <seconds>";
         if (!IsUserAllowedForServer(authorId, server.Id))
             return "🚫 You're not authorized for that server.";
-        if (server.Status != ServerStatus.Running)
-            return "⚠ Server is not running.";
-        if (RestartServer == null || !IsEnabled || !IsRunning)
-            return "⚠ Restart callback or bot is unavailable.";
-        if (!server.DiscordAnnouncementsEnabled || AnnouncementChannel(server) == null)
-            return "⚠ Enable announcements and a separate channel before scheduling a warned restart.";
         if (!TangerangAnnouncementFormatter.TryParseRestart(
                 input, server.DiscordRestartWarningSeconds, out _, out int seconds))
             return "⚠ Restart warning must be between 30 and 600 seconds.";
+        return QueueWarnedRestart(server, seconds);
+    }
+
+    /// <summary>
+    /// Shared entry point for the local WGS button and authorized Discord
+    /// control command. Countdown is volatile and cancelled on bot shutdown.
+    /// </summary>
+    public string QueueWarnedRestart(GameServer server, int seconds)
+    {
+        if (server.Status != ServerStatus.Running) return "Server is not running.";
+        if (RestartServer == null || !IsEnabled || !IsRunning)
+            return "Discord bot or restart callback unavailable.";
+        if (seconds is < 30 or > 600) return "Choose 30–600 seconds.";
+        if (!server.DiscordAnnouncementsEnabled || AnnouncementChannel(server) == null)
+            return "Enable announcements and a separate channel first.";
 
         var cts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
         if (!_pendingWarnedRestarts.TryAdd(server.Id, cts))
         {
             cts.Dispose();
-            return "⚠ A warned restart is already pending for this server.";
+            return "A warned restart is already pending.";
         }
-        // A failure to post the first warning ABORTS the restart. Never perform
-        // a silent restart when our promised notice could not be delivered.
+
         _ = Task.Run(() => ExecuteWarnedRestartAsync(server, seconds, cts));
-        return $"⏳ Warning countdown requested for **{server.DisplayName}** ({seconds}s). Use !cancelrestart <name> to cancel.";
+        return $"Warned restart requested for {server.DisplayName} ({seconds}s).";
+    }
+
+    public async Task<bool> CancelWarnedRestartAsync(GameServer server)
+    {
+        if (!_pendingWarnedRestarts.TryRemove(server.Id, out var cts))
+            return false;
+        cts.Cancel();
+        await PostAnnouncementAsync(server,
+            $"✅ **{TangerangAnnouncementFormatter.Clean(server.DisplayName)}** scheduled restart cancelled.",
+            CancellationToken.None);
+        return true;
     }
 
     private async Task ExecuteWarnedRestartAsync(
@@ -1176,12 +1208,9 @@ public class DiscordBotService : IDisposable
         if (server == null) return "❌ Server not found.";
         if (!IsUserAllowedForServer(authorId, server.Id))
             return "🚫 You're not authorized for that server.";
-        if (!_pendingWarnedRestarts.TryRemove(server.Id, out var cts))
-            return "ℹ️ No warned restart is pending.";
-        cts.Cancel();
-        await PostAnnouncementAsync(server,
-            $"✅ **{TangerangAnnouncementFormatter.Clean(server.DisplayName)}** scheduled restart cancelled by an admin.", ct);
-        return $"✅ Warned restart cancelled for **{server.DisplayName}**.";
+        var cancelled = await CancelWarnedRestartAsync(server);
+        return cancelled ? $"✅ Warned restart cancelled for **{server.DisplayName}**."
+                         : "ℹ️ No warned restart is pending.";
     }
 
     // ── Discord HTTP ──────────────────────────────────────────────────────────
