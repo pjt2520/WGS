@@ -127,5 +127,32 @@ Check("Safe payload contains intended text",
 Check("Safe payload has an empty mention parse array",
     payload["allowed_mentions"]?["parse"] is JArray parsed && parsed.Count == 0);
 
+// Restart countdown cancellation is atomic, even if an admin clicks Cancel
+// at the exact instant the scheduled restart becomes due.
+var cancelledGate = new TangerangRestartGate();
+Check("Cancel wins over restart when requested first",
+    cancelledGate.TryCancel() && !cancelledGate.TryBeginRestart());
+Check("Repeated cancellation is rejected",
+    !cancelledGate.TryCancel());
+var runningGate = new TangerangRestartGate();
+Check("Restart wins over cancellation once execution has started",
+    runningGate.TryBeginRestart() && !runningGate.TryCancel());
+runningGate.Finish();
+Check("Completed restart cannot be retroactively cancelled",
+    !runningGate.TryCancel());
+
+// Race both operations repeatedly; exactly one may win on every attempt.
+var raceSafe = true;
+for (int i = 0; i < 200; i++)
+{
+    var gate = new TangerangRestartGate();
+    bool didCancel = false, didStart = false;
+    Parallel.Invoke(
+        () => didCancel = gate.TryCancel(),
+        () => didStart = gate.TryBeginRestart());
+    if (didCancel == didStart) raceSafe = false;
+}
+Check("200 concurrent cancel-versus-restart races are exclusive", raceSafe);
+
 Console.WriteLine($"Results: {pass} passed, {fail} failed.");
 return fail == 0 ? 0 : 1;
