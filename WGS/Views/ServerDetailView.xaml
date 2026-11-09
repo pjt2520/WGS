@@ -683,6 +683,56 @@
                                            TextWrapping="Wrap" Margin="22,0,0,12"
                                            Text="Anyone who can read your Discord status channel will see this code. Requires the Discord bot's live status board to be enabled; changes appear at its next refresh."/>
 
+                                <!-- Tangerang Announcement Center is entirely opt-in.
+                                     This is independent of webhook notifications and is
+                                     delivered through the configured Discord bot account. -->
+                                <Border Background="#182638" BorderBrush="#355273" BorderThickness="1"
+                                        CornerRadius="7" Padding="14" Margin="0,4,0,16">
+                                    <StackPanel>
+                                        <TextBlock Text="Tangerang Announcement Center" FontWeight="SemiBold"
+                                                   FontSize="14" Foreground="#92C6FF" Margin="0,0,0,8"/>
+                                        <CheckBox IsChecked="{Binding Server.DiscordAnnouncementsEnabled}"
+                                                  Style="{StaticResource DarkCheckBox}"
+                                                  Content="Enable server announcements in Discord (opt-in)"
+                                                  Margin="0,0,0,8"/>
+                                        <TextBlock Text="Announcement channel ID (blank uses the bot status channel)"
+                                                   Style="{StaticResource FieldLabel}"/>
+                                        <TextBox Text="{Binding Server.DiscordAnnouncementChannelId, UpdateSourceTrigger=PropertyChanged}"
+                                                 Style="{StaticResource DarkTextBox}" Margin="0,0,0,6"
+                                                 ToolTip="Choose a channel separate from the bot's private control channel. Bot must have Send Messages permission."/>
+                                        <TextBlock Foreground="#D29922" FontSize="11" TextWrapping="Wrap"
+                                                   Margin="0,0,0,10"
+                                                   Text="Use a player-facing channel, not your private control channel. Announcements require a working bot and will never ping roles or @everyone."/>
+                                        <TextBlock Text="Custom announcement (500 characters max)"
+                                                   Style="{StaticResource FieldLabel}"/>
+                                        <TextBox Text="{Binding AnnouncementDraft, UpdateSourceTrigger=PropertyChanged}"
+                                                 Style="{StaticResource DarkTextBox}"
+                                                 MinHeight="50" TextWrapping="Wrap"
+                                                 AcceptsReturn="True" MaxLength="500"
+                                                 Margin="0,0,0,8"
+                                                 ToolTip="Send a manual message to the configured Discord announcement channel."/>
+                                        <Button Content="📣 Send announcement" Style="{StaticResource PrimaryButton}"
+                                                Command="{Binding PublishAnnouncementCommand}" HorizontalAlignment="Left"
+                                                Margin="0,0,0,12"/>
+                                        <TextBlock Text="Warned restart countdown (seconds, 30–600)"
+                                                   Style="{StaticResource FieldLabel}"/>
+                                        <TextBox Text="{Binding Server.DiscordRestartWarningSeconds, UpdateSourceTrigger=PropertyChanged}"
+                                                 Style="{StaticResource DarkTextBox}" Width="110"
+                                                 HorizontalAlignment="Left" Margin="0,0,0,8"
+                                                 ToolTip="Used only by the explicit warned-restart command/button, not regular scheduled restarts."/>
+                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                            <Button Content="⏳ Warn and restart" Style="{StaticResource DangerButton}"
+                                                    Command="{Binding WarnedRestartCommand}" Margin="0,0,8,0"/>
+                                            <Button Content="Cancel countdown" Style="{StaticResource GhostButton}"
+                                                    Command="{Binding CancelWarnedRestartCommand}"/>
+                                        </StackPanel>
+                                        <TextBlock Text="{Binding AnnouncementResult}" TextWrapping="Wrap"
+                                                   Foreground="#92C6FF" FontSize="11"/>
+                                        <TextBlock Text="Regular WGS Restart and scheduled daily restarts remain unchanged. This countdown is cancelled if the bot shuts down."
+                                                   Foreground="#8B949E" FontSize="11" TextWrapping="Wrap" Margin="0,6,0,0"/>
+                                    </StackPanel>
+                                </Border>
+
                                 <CheckBox IsChecked="{Binding Server.DiscordAdminControls}" Style="{StaticResource DarkCheckBox}"
                                           Content="Enable admin controls (Start/Stop/Restart/Backup/Update buttons)" Margin="0,0,0,8"
                                           ToolTip="These buttons can stop or update the server — anyone in the channel below can press them (Allowed User IDs is the only gate). Never put this on the public status channel."/>
