@@ -130,7 +130,7 @@ public static class TangerangAnnouncementFormatter
 
         var message = $"🛡️ **{Clean(server.DisplayName)}** PlayFab session is ready for Xbox, PlayStation and PC crossplay.";
         return server.DiscordPublishJoinCode
-            ? message + $"\n🔑 Join code: \`{joinCode}\`"
+            ? message + $"\n🔑 Join code: `{joinCode}`"
             : message + "\nJoin code sharing is disabled for this server.";
     }
 
