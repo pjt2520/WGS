@@ -1008,12 +1008,8 @@ public class DiscordBotService : IDisposable
     /// </summary>
     private string? AnnouncementChannel(GameServer server)
     {
-        var channel = string.IsNullOrWhiteSpace(server.DiscordAnnouncementChannelId)
-            ? StatusChannelId
-            : server.DiscordAnnouncementChannelId.Trim();
-        if (string.IsNullOrWhiteSpace(channel) || channel == ChannelId) return null;
-        return System.Text.RegularExpressions.Regex.IsMatch(channel, @"^\d{17,20}$")
-            ? channel : null;
+        return TangerangAnnouncementFormatter.ResolveAnnouncementChannel(
+            server.DiscordAnnouncementChannelId, StatusChannelId, ChannelId);
     }
 
     /// <summary>
@@ -1033,11 +1029,8 @@ public class DiscordBotService : IDisposable
         if (clean.Length == 0) return false;
         if (clean.Length > 1800) clean = clean[..1800];
 
-        var payload = JsonConvert.SerializeObject(new
-        {
-            content = clean,
-            allowed_mentions = new { parse = Array.Empty<string>() }
-        });
+        var payload = JsonConvert.SerializeObject(
+            TangerangAnnouncementFormatter.DiscordPayload(clean));
 
         try
         {
@@ -1222,7 +1215,8 @@ public class DiscordBotService : IDisposable
         {
             // Discord has a 2000-char limit
             if (content.Length > 1990) content = content[..1990] + "…";
-            var payload = JsonConvert.SerializeObject(new { content });
+            var payload = JsonConvert.SerializeObject(
+                TangerangAnnouncementFormatter.DiscordPayload(content));
             var req     = new StringContent(payload, Encoding.UTF8, "application/json");
             await _http.PostAsync(
                 $"https://discord.com/api/v10/channels/{ChannelId}/messages",
