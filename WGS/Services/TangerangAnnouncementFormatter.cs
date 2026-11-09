@@ -69,6 +69,34 @@ public static class TangerangAnnouncementFormatter
                     | StringSplitOptions.TrimEntries)
                .Contains(userId, StringComparer.Ordinal);
 
+    /// <summary>
+    /// Never fall back to the private control channel for announcements, even
+    /// if a status channel was not explicitly configured. Admin instructions
+    /// should not mingle with messages meant for game players.
+    /// </summary>
+    public static string? ResolveAnnouncementChannel(
+        string? perServer, string? statusChannel, string? controlChannel)
+    {
+        var channel = string.IsNullOrWhiteSpace(perServer)
+            ? statusChannel?.Trim()
+            : perServer.Trim();
+        if (string.IsNullOrWhiteSpace(channel) || channel == controlChannel)
+            return null;
+        return System.Text.RegularExpressions.Regex.IsMatch(channel, @"^\d{17,20}$")
+            ? channel : null;
+    }
+
+    /// <summary>
+    /// The empty parse list prevents *all* mentions (including everyone/here)
+    /// in the Discord HTTP API even when source text contains @role syntax.
+    /// </summary>
+    public static object DiscordPayload(string message)
+        => new
+        {
+            content = message,
+            allowed_mentions = new { parse = Array.Empty<string>() }
+        };
+
     /// <summary>Pure check to avoid sending any unrequested announcements.</summary>
     public static bool MayAnnounce(GameServer server)
         => server.DiscordAnnouncementsEnabled;
