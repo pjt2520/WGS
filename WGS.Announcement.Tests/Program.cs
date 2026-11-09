@@ -93,13 +93,46 @@ Check("Restart warning contains no dangerous actual server command",
     !TangerangAnnouncementFormatter.RestartWarning(one, 60).Contains("!restart"));
 
 Check("Lifecycle start message formatted",
-    TangerangAnnouncementFormatter.LifecycleMessage(one, ServerStatus.Running).Contains("online"));
+    TangerangAnnouncementFormatter.LifecycleMessage(one, ServerStatus.Running).Contains("started"));
 Check("Lifecycle stop message formatted",
     TangerangAnnouncementFormatter.LifecycleMessage(one, ServerStatus.Stopped).Contains("offline"));
 Check("Lifecycle errors differentiated",
     TangerangAnnouncementFormatter.LifecycleMessage(one, ServerStatus.Error).Contains("error"));
 Check("Intermediate lifecycle state does not announce",
     TangerangAnnouncementFormatter.LifecycleMessage(one, ServerStatus.Starting) == "");
+
+// A process being launched is not yet proof that the Valheim lobby is ready.
+// Readiness is derived only from a registered six-digit PlayFab session.
+var valheim = new GameServer
+{
+    GameId = "valheim",
+    DisplayName = "Tangerang Test",
+    Status = ServerStatus.Running
+};
+valheim.GameSpecificSettings["crossplay"] = "true";
+valheim.DiscordPublishJoinCode = false;
+var readyPrivate = TangerangAnnouncementFormatter.PlayFabReadyMessage(valheim, "066000");
+Check("PlayFab readiness is shown without exposing a private invite",
+    readyPrivate.Contains("ready") && !readyPrivate.Contains("066000"));
+valheim.DiscordPublishJoinCode = true;
+var readyPublic = TangerangAnnouncementFormatter.PlayFabReadyMessage(valheim, "066000");
+Check("PlayFab ready message preserves leading zeros when opted in",
+    readyPublic.Contains("066000"));
+Check("Invalid PlayFab code is not announced",
+    TangerangAnnouncementFormatter.PlayFabReadyMessage(valheim, "invalid") == "");
+Check("No readiness announcement before registration",
+    TangerangAnnouncementFormatter.PlayFabReadyMessage(valheim, null) == "");
+valheim.Status = ServerStatus.Stopped;
+Check("Stopped Valheim cannot publish a stale join code",
+    TangerangAnnouncementFormatter.PlayFabReadyMessage(valheim, "066000") == "");
+valheim.Status = ServerStatus.Running;
+valheim.GameSpecificSettings["crossplay"] = "false";
+Check("Non-crossplay Valheim cannot publish a PlayFab code",
+    TangerangAnnouncementFormatter.PlayFabReadyMessage(valheim, "066000") == "");
+valheim.GameSpecificSettings["crossplay"] = "true";
+valheim.GameId = "cs2";
+Check("Another game cannot publish a PlayFab join code",
+    TangerangAnnouncementFormatter.PlayFabReadyMessage(valheim, "066000") == "");
 
 const string status = "456789012345678901";
 const string control = "567890123456789012";
