@@ -23,6 +23,7 @@ public partial class ServerViewModel : BaseViewModel, IDisposable
     private readonly SteamCmdService       _steamCmd;
     private readonly BackupService         _backup;
     private readonly NotificationService   _notifications;
+    private readonly DiscordBotService     _announcementBot;
     private readonly PerformanceMonitorService _perfMonitor;
     private readonly ConfigService         _config;
     private readonly ModManagerService     _mods;
@@ -89,6 +90,45 @@ public partial class ServerViewModel : BaseViewModel, IDisposable
     // Join codes are generated afresh on every PlayFab session. This is
     // read from the server's live console tracker, never a stored/stale value.
     [ObservableProperty] private string _valheimJoinCode = "Waiting for PlayFab...";
+
+    // Tangerang Announcement Center: these local UI fields are not persisted.
+    // Messages are sent only on explicit click; no unrequested pings.
+    [ObservableProperty] private string _announcementDraft = string.Empty;
+    [ObservableProperty] private string _announcementResult = string.Empty;
+    [ObservableProperty] private bool _announcementBusy;
+
+    [RelayCommand]
+    private async Task PublishAnnouncementAsync()
+    {
+        if (AnnouncementBusy) return;
+        AnnouncementBusy = true;
+        try
+        {
+            var sent = await _announcementBot.AnnounceFromUiAsync(Server, AnnouncementDraft);
+            AnnouncementResult = sent
+                ? "Announcement delivered to Discord."
+                : "Not sent. Check bot, announcements checkbox, separate channel, or 15-second cooldown.";
+            if (sent) AnnouncementDraft = string.Empty;
+        }
+        finally { AnnouncementBusy = false; }
+    }
+
+    [RelayCommand]
+    private void WarnedRestart()
+    {
+        var ok = WpfMsgBox.Show(
+            "Send a Discord countdown, then restart this game server? This is a real restart.",
+            "Tangerang warned restart", WpfMsgBoxButton.YesNo, WpfMsgBoxImage.Warning);
+        if (ok != WpfMsgBoxResult.Yes) return;
+        AnnouncementResult = _announcementBot.QueueWarnedRestart(
+            Server, Server.DiscordRestartWarningSeconds);
+    }
+
+    [RelayCommand]
+    private async Task CancelWarnedRestartAsync()
+        => AnnouncementResult = await _announcementBot.CancelWarnedRestartAsync(Server)
+            ? "Warned restart cancelled."
+            : "No restart countdown was pending.";
     // The Copy button remains disabled until a fresh session has registered
     // a six-digit invite. Status changes can invalidate it immediately.
     public bool CanCopyValheimJoinCode => IsRunning
@@ -548,7 +588,8 @@ public partial class ServerViewModel : BaseViewModel, IDisposable
         PerfHistoryService perfHistory, SteamWorkshopService workshop, WorkshopDbService workshopDb,
         TemplateService templates, ScheduledTaskService scheduler, NetworkMonitorService network,
         GroupBanListService groupBans, ServerHygieneService hygiene,
-        ConfigPresetService presets, WakeOnDemandService wakeService)
+        ConfigPresetService presets, WakeOnDemandService wakeService,
+        DiscordBotService announcementBot)
     {
         Server         = server;
         Plugin         = GameRegistry.Get(server.GameId);
@@ -557,6 +598,7 @@ public partial class ServerViewModel : BaseViewModel, IDisposable
         _steamCmd      = steamCmd;
         _backup        = backup;
         _notifications = notifications;
+        _announcementBot = announcementBot;
         _perfMonitor   = perfMonitor;
         _config        = config;
         _mods          = mods;
