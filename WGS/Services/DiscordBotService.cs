@@ -117,6 +117,8 @@ public class DiscordBotService : IDisposable
         _lastLifecycleAnnouncements = new();
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTimeOffset>
         _lastManualAnnouncements = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string>
+        _lastPlayFabReadySession = new();
 
     // ── Gateway (for button interactions only — everything else uses REST polling) ──
     private Task?  _gatewayLoop;
@@ -195,6 +197,29 @@ public class DiscordBotService : IDisposable
             _gatewayLoop = Task.Run(() => GatewayLoop(_cts.Token));
         }
         StatusChanged?.Invoke("✅ Discord bot started");
+    }
+
+    /// <summary>
+    /// Called when Valheim logs a *registered* PlayFab session, not merely
+    /// when its game process starts. Each session code is announced once
+    /// (provided this server explicitly enables announcements). This gives
+    /// members a useful "ready to join" signal after restart.
+    /// </summary>
+    public async Task<bool> AnnouncePlayFabReadyAsync(GameServer server, string? code)
+    {
+        if (!server.DiscordAnnouncementsEnabled) return false;
+        var message = TangerangAnnouncementFormatter.PlayFabReadyMessage(server, code);
+        if (message.Length == 0) return false;
+
+        // A new Valheim process or newly registered code may receive another
+        // readiness announcement; repeating the same session log must not.
+        var marker = $"{server.LastStarted?.Ticks ?? 0}:{code}";
+        if (_lastPlayFabReadySession.TryGetValue(server.Id, out var prior)
+            && prior == marker) return false;
+
+        var sent = await PostAnnouncementAsync(server, message, _cts.Token);
+        if (sent) _lastPlayFabReadySession[server.Id] = marker;
+        return sent;
     }
 
     private static void LoadMessageIds(string file, Dictionary<string, string> target)
