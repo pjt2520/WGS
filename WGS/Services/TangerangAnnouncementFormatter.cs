@@ -57,6 +57,18 @@ public static class TangerangAnnouncementFormatter
         return cleaned.Trim();
     }
 
+    /// <summary>
+    /// Fail-closed admin allow-list. An empty list grants **no** access,
+    /// even if somebody sees a bot command in the configured control channel.
+    /// Discord snowflakes are decimal strings; never trust a display name.
+    /// </summary>
+    public static bool IsAuthorizedAdmin(string? allowList, string? userId)
+        => !string.IsNullOrWhiteSpace(allowList)
+           && !string.IsNullOrWhiteSpace(userId)
+           && allowList.Split(',', StringSplitOptions.RemoveEmptyEntries
+                    | StringSplitOptions.TrimEntries)
+               .Contains(userId, StringComparer.Ordinal);
+
     /// <summary>Pure check to avoid sending any unrequested announcements.</summary>
     public static bool MayAnnounce(GameServer server)
         => server.DiscordAnnouncementsEnabled;
