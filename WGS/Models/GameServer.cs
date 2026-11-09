@@ -47,6 +47,15 @@ public class GameServer
     /// that members of the configured Discord channel can use to join.
     /// </summary>
     public bool DiscordPublishJoinCode { get; set; } = false;
+    /// <summary>Opt in to Tangerang's Discord announcement center.
+    /// Off by default to prevent surprise messages on existing servers.</summary>
+    public bool DiscordAnnouncementsEnabled { get; set; } = false;
+    /// <summary>Optional channel ID for announcements; when blank, use the
+    /// Discord bot's configured public status channel (never its admin channel).</summary>
+    public string DiscordAnnouncementChannelId { get; set; } = string.Empty;
+    /// <summary>Only used for an authorized !restartwarn command. It does not
+    /// change the existing instant Restart button or scheduled restart.</summary>
+    public int DiscordRestartWarningSeconds { get; set; } = 60;
     /// <summary>Enables Start/Stop/Restart/Backup/Update buttons for this server, posted to DiscordAdminChannelId — a separate, presumably restricted channel, never the public status board.</summary>
     public bool DiscordAdminControls      { get; set; } = false;
     /// <summary>Channel for the admin control buttons. Keep this private/staff-only — anyone who can press these buttons can stop or update the server.</summary>

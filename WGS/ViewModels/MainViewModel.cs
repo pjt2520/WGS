@@ -209,6 +209,24 @@ public partial class MainViewModel : BaseViewModel
 
         manager.PortsReassigned += srv => Save();
 
+        // The server process reaching Running does not mean Valheim has a
+        // joinable PlayFab lobby yet. Wait for its registration log line,
+        // which ServerManagerService has already passed to the tracker.
+        // Marshal the server collection lookup to WPF's dispatcher because
+        // process output arrives on a background thread.
+        manager.LogReceived += (id, msg) =>
+        {
+            if (!msg.Text.Contains("registered with join code ", StringComparison.Ordinal))
+                return;
+
+            WpfApplication.Current?.Dispatcher?.BeginInvoke(new Action(() =>
+            {
+                var server = Servers.FirstOrDefault(v => v.Server.Id == id)?.Server;
+                var code = _manager.GetInstance(id)?.ValheimPlayers?.GetCurrentJoinCode();
+                if (server != null) _ = _bot.AnnouncePlayFabReadyAsync(server, code);
+            }));
+        };
+
         manager.StatusChanged += (id, status) =>
         {
             WpfApplication.Current?.Dispatcher?.Invoke(() =>
@@ -223,6 +241,10 @@ public partial class MainViewModel : BaseViewModel
             var server = Servers.FirstOrDefault(v => v.Server.Id == id)?.Server;
             if (server != null)
             {
+                // Optional Tangerang Announcement Center. This dispatches a
+                // Discord notice without blocking server state transitions.
+                // When disabled (the default) it produces no traffic.
+                _ = _bot.AnnounceLifecycleAsync(server, status);
                 if (status == ServerStatus.Running)
                 {
                     if (_config.EnableUPnP) _ = _upnp.AddPortsForServerAsync(server);
@@ -763,7 +785,7 @@ public partial class MainViewModel : BaseViewModel
     {
         var vm = new ServerViewModel(srv, _backend, _manager, _steamCmd, _backup, _notifications, _perfMonitor, _config, _mods,
                _sourceMod, _configEditor, _playerStats, _perfHistory, _workshop, _workshopDb, _templates, _scheduler,
-               _network, _groupBans, _hygiene, _presets, _wakeOnDemand);
+               _network, _groupBans, _hygiene, _presets, _wakeOnDemand, _bot);
         vm.BatchSelectionChanged = () => OnPropertyChanged(nameof(BatchSelectedCount));
         return vm;
     }

@@ -266,7 +266,9 @@
                                      Text="{Binding BotPrefix, UpdateSourceTrigger=PropertyChanged}"/>
                         </StackPanel>
                         <StackPanel Grid.Column="2">
-                            <TextBlock Text="Admin User IDs (empty = everyone can use bot)" Style="{StaticResource FieldLabel}"/>
+                            <TextBlock Text="Admin User IDs (required for remote commands)" Style="{StaticResource FieldLabel}"/>
+                            <TextBlock Text="Security: if this list is empty, no one can issue remote commands or use admin buttons. The read-only status board still works."
+                                       Foreground="#D29922" FontSize="11" TextWrapping="Wrap" Margin="0,2,0,6"/>
                             <Border Background="#21262d" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
                                     CornerRadius="4" MinHeight="80" MaxHeight="150" Margin="0,0,0,6">
                                 <ListBox ItemsSource="{Binding BotAdminList}"

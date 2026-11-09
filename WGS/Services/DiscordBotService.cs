@@ -82,6 +82,43 @@ public class DiscordBotService : IDisposable
     /// <summary>Tracks which (channel, HTTP status) error combos have already been reported, so a
     /// persistent problem (e.g. missing permissions) doesn't spam StatusChanged every 60 seconds.</summary>
     private readonly HashSet<string> _reportedStatusErrors = new();
+    // Announcement Center: timers are cancelled on Stop/Dispose; no watchdog
+    // restart will run later if WGS shuts down or the bot is reconfigured.
+    private sealed class PendingWarnedRestart : IDisposable
+    {
+        public CancellationTokenSource Cancellation { get; }
+        public TangerangRestartGate Gate { get; } = new();
+        public DateTime? ServerStartedAt { get; }
+
+        public PendingWarnedRestart(CancellationTokenSource cancellation, DateTime? serverStartedAt)
+        {
+            Cancellation = cancellation;
+            ServerStartedAt = serverStartedAt;
+        }
+
+        public bool TryCancel()
+        {
+            if (!Gate.TryCancel()) return false;
+            try { Cancellation.Cancel(); }
+            catch (ObjectDisposedException) { }
+            return true;
+        }
+
+        public void Dispose()
+        {
+            Gate.Finish();
+            Cancellation.Dispose();
+        }
+    }
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, PendingWarnedRestart>
+        _pendingWarnedRestarts = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTimeOffset>
+        _lastLifecycleAnnouncements = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTimeOffset>
+        _lastManualAnnouncements = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string>
+        _lastPlayFabReadySession = new();
 
     // ── Gateway (for button interactions only — everything else uses REST polling) ──
     private Task?  _gatewayLoop;
@@ -104,6 +141,30 @@ public class DiscordBotService : IDisposable
     /// to JSON alongside bot settings or copied from stale console history.
     /// </summary>
     public Func<string, string?>? GetCurrentValheimJoinCode { get; set; }
+
+    /// <summary>Optional additional announcement behavior, controlled by
+    /// GameServer.DiscordAnnouncementsEnabled and each channel's permissions.
+    /// This never exposes WGS admin commands to the public status channel.</summary>
+    public async Task<bool> AnnounceLifecycleAsync(GameServer server, ServerStatus status)
+    {
+        if (status is not (ServerStatus.Running or ServerStatus.Stopped or ServerStatus.Error))
+            return false;
+        if (!TangerangAnnouncementFormatter.MayAnnounce(server)) return false;
+
+        // Process exit, service restart and WGS status reattachment can produce
+        // repeated transitions. Avoid duplicate Discord posts within 15 seconds.
+        var key = server.Id + ":" + status;
+        var now = DateTimeOffset.UtcNow;
+        if (_lastLifecycleAnnouncements.TryGetValue(key, out var last)
+            && now - last < TimeSpan.FromSeconds(15)) return false;
+        _lastLifecycleAnnouncements[key] = now;
+
+        var text = TangerangAnnouncementFormatter.LifecycleMessage(server, status);
+        if (string.IsNullOrEmpty(text)) return false;
+        var sent = await PostAnnouncementAsync(server, text, _cts.Token);
+        if (!sent) _lastLifecycleAnnouncements.TryRemove(key, out _);
+        return sent;
+    }
     public Func<string, Task>?            StartServer { get; set; }
     public Func<string, Task>?            StopServer  { get; set; }
     public Func<string, Task>?            RestartServer { get; set; }
@@ -138,6 +199,29 @@ public class DiscordBotService : IDisposable
         StatusChanged?.Invoke("✅ Discord bot started");
     }
 
+    /// <summary>
+    /// Called when Valheim logs a *registered* PlayFab session, not merely
+    /// when its game process starts. Each session code is announced once
+    /// (provided this server explicitly enables announcements). This gives
+    /// members a useful "ready to join" signal after restart.
+    /// </summary>
+    public async Task<bool> AnnouncePlayFabReadyAsync(GameServer server, string? code)
+    {
+        if (!server.DiscordAnnouncementsEnabled) return false;
+        var message = TangerangAnnouncementFormatter.PlayFabReadyMessage(server, code);
+        if (message.Length == 0) return false;
+
+        // A new Valheim process or newly registered code may receive another
+        // readiness announcement; repeating the same session log must not.
+        var marker = $"{server.LastStarted?.Ticks ?? 0}:{code}";
+        if (_lastPlayFabReadySession.TryGetValue(server.Id, out var prior)
+            && prior == marker) return false;
+
+        var sent = await PostAnnouncementAsync(server, message, _cts.Token);
+        if (sent) _lastPlayFabReadySession[server.Id] = marker;
+        return sent;
+    }
+
     private static void LoadMessageIds(string file, Dictionary<string, string> target)
     {
         try
@@ -159,6 +243,10 @@ public class DiscordBotService : IDisposable
     public void Stop()
     {
         _cts.Cancel();
+        // Cancelling an authorized delayed restart must never leave a pending
+        // action that could fire after this bot has been disabled or restarted.
+        foreach (var countdown in _pendingWarnedRestarts.Values)
+            countdown.TryCancel();
         try { _loop?.Wait(2000); } catch { }
         try { _statusLoop?.Wait(2000); } catch { }
         try { _gatewayLoop?.Wait(2000); } catch { }
@@ -746,13 +834,8 @@ public class DiscordBotService : IDisposable
         interaction["member"]?["user"]?["id"]?.ToString() ?? interaction["user"]?["id"]?.ToString() ?? "";
 
     private bool IsInteractionUserAllowed(JObject interaction)
-    {
-        if (string.IsNullOrWhiteSpace(AllowedUserIds)) return true;
-        var userId = InteractionUserId(interaction);
-        if (string.IsNullOrEmpty(userId)) return false;
-        var allowed = AllowedUserIds.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        return allowed.Contains(userId);
-    }
+        => TangerangAnnouncementFormatter.IsAuthorizedAdmin(
+            AllowedUserIds, InteractionUserId(interaction));
 
     /// <summary>Per-server narrowing on top of the general allow-list — see ServerRestrictedUserIds.
     /// True (allowed) when the user has no entry, or their entry's list is empty, or it contains
@@ -838,12 +921,10 @@ public class DiscordBotService : IDisposable
             if (isBot) continue;
             if (!content.StartsWith(CommandPrefix, StringComparison.OrdinalIgnoreCase)) continue;
 
-            // Authorization check
-            if (!string.IsNullOrWhiteSpace(AllowedUserIds))
-            {
-                var allowed = AllowedUserIds.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-                if (!allowed.Contains(authorId)) continue;
-            }
+            // Fail closed. Empty Admin User IDs grants NO text-command access
+            // (including start/stop/restart/cmd) even in a private channel.
+            if (!TangerangAnnouncementFormatter.IsAuthorizedAdmin(AllowedUserIds, authorId))
+                continue;
 
             await HandleCommand(id, authorId, content, ct);
         }
@@ -870,6 +951,9 @@ public class DiscordBotService : IDisposable
                 "update"  => await RunServerAction(args, authorId, UpdateServer,  "🔄 Updating",   "update"),
                 "backup"  => await RunServerAction(args, authorId, BackupServer,  "💾 Backing up", "backup"),
                 "cmd"     => await RunConsoleCmd(args, authorId),
+                "announce" => await RunAnnouncementCommandAsync(args, authorId, ct),
+                "restartwarn" => RunRestartWarningCommand(args, authorId),
+                "cancelrestart" => await CancelRestartWarningCommandAsync(args, authorId, ct),
                 _         => $"❓ Unknown command `{command}`. Type `{CommandPrefix}help`."
             };
 
@@ -890,7 +974,10 @@ public class DiscordBotService : IDisposable
         $"`{CommandPrefix}update  <name>`          — update server\n" +
         $"`{CommandPrefix}backup  <name>`          — create backup\n" +
         $"`{CommandPrefix}cmd     <name> <cmd>`    — send console command\n" +
-        $"*Name matching is case-insensitive and partial.*";
+        $"`{CommandPrefix}announce <server> | <message>` — broadcast to the announcement channel\n" +
+        $"`{CommandPrefix}restartwarn <server> | <seconds>` — warn, then restart (30–600s)\n" +
+        $"`{CommandPrefix}cancelrestart <server>` — cancel a pending warned restart\n" +
+        $"*Name matching is case-insensitive and partial. Admin User IDs are required for all commands.*";
 
     private string BuildStatus()
     {
@@ -963,6 +1050,222 @@ public class DiscordBotService : IDisposable
             s.DisplayName.Contains(namePart, StringComparison.OrdinalIgnoreCase));
     }
 
+    // ── Tangerang Announcement Center ───────────────────────────────────────
+
+    /// <summary>
+    /// Require an explicitly configured announcement channel, or the live
+    /// status channel when it is *separate* from the remote-control channel.
+    /// No fall-through to the private control channel: avoid mixing commands
+    /// and member announcements. All channel IDs must be real snowflakes.
+    /// </summary>
+    private string? AnnouncementChannel(GameServer server)
+    {
+        return TangerangAnnouncementFormatter.ResolveAnnouncementChannel(
+            server.DiscordAnnouncementChannelId, StatusChannelId, ChannelId);
+    }
+
+    /// <summary>
+    /// Posts via the existing bot credentials (no webhook needed), suppresses
+    /// all @everyone, @here, user and role mentions at the Discord API level,
+    /// and reports HTTP failures instead of claiming a message was delivered.
+    /// </summary>
+    private async Task<bool> PostAnnouncementAsync(
+        GameServer server, string message, CancellationToken ct)
+    {
+        var channel = AnnouncementChannel(server);
+        if (!IsEnabled || !TangerangAnnouncementFormatter.MayAnnounce(server)
+            || channel == null || string.IsNullOrWhiteSpace(BotToken))
+            return false;
+
+        var clean = TangerangAnnouncementFormatter.Clean(message);
+        if (clean.Length == 0) return false;
+        if (clean.Length > 1800) clean = clean[..1800];
+
+        var payload = JsonConvert.SerializeObject(
+            TangerangAnnouncementFormatter.DiscordPayload(clean));
+
+        try
+        {
+            using var response = await _http.PostAsync(
+                $"https://discord.com/api/v10/channels/{channel}/messages",
+                new StringContent(payload, Encoding.UTF8, "application/json"), ct);
+            if (response.IsSuccessStatusCode) return true;
+            StatusChanged?.Invoke($"⚠ Announcement was not delivered to channel {channel}: {(int)response.StatusCode}.");
+        }
+        catch (OperationCanceledException) { /* bot stopped or timer cancelled */ }
+        catch (Exception ex)
+        {
+            StatusChanged?.Invoke($"⚠ Announcement failed: {ex.GetType().Name}");
+        }
+        return false;
+    }
+
+    private async Task<string> RunAnnouncementCommandAsync(
+        string[] args, string authorId, CancellationToken ct)
+    {
+        if (!TangerangAnnouncementFormatter.IsAuthorizedAdmin(AllowedUserIds, authorId))
+            return "🚫 Administrator access required.";
+        if (!TangerangAnnouncementFormatter.TryParseAnnouncement(
+                string.Join(" ", args), out var name, out var message))
+            return $"Usage: {CommandPrefix}announce <server name> | <message> (1–500 characters)";
+
+        var server = FindServer(name);
+        if (server == null) return "❌ Server not found.";
+        if (!IsUserAllowedForServer(authorId, server.Id))
+            return "🚫 You're not authorized for that server.";
+        if (!server.DiscordAnnouncementsEnabled || AnnouncementChannel(server) == null)
+            return "⚠ Enable announcements for this server and configure a dedicated announcement/status channel.";
+
+        var sent = await AnnounceFromUiAsync(server, message, ct);
+        return sent ? $"📣 Announcement sent for **{server.DisplayName}**."
+                    : "⚠ Announcement not sent. Check bot, channel, opt-in and cooldown.";
+    }
+
+    /// <summary>
+    /// Local WGS UI uses exactly the same permissions/channel checks and
+    /// 15-second anti-spam rule as the private Discord !announce command.
+    /// The UI itself is already running locally, so it doesn't need a Discord
+    /// administrator ID; remote control commands still do.
+    /// </summary>
+    public async Task<bool> AnnounceFromUiAsync(
+        GameServer server, string message, CancellationToken ct = default)
+    {
+        var clean = TangerangAnnouncementFormatter.Clean(message);
+        if (clean.Length is < 1 or > 500 || !server.DiscordAnnouncementsEnabled
+            || AnnouncementChannel(server) == null)
+            return false;
+        var now = DateTimeOffset.UtcNow;
+        if (_lastManualAnnouncements.TryGetValue(server.Id, out var last)
+            && now - last < TimeSpan.FromSeconds(15)) return false;
+        var sent = await PostAnnouncementAsync(
+            server, TangerangAnnouncementFormatter.CustomMessage(server, clean), ct);
+        if (sent) _lastManualAnnouncements[server.Id] = now;
+        return sent;
+    }
+
+    /// <summary>
+    /// Schedules a *warned* restart as a distinct explicit command. Existing
+    /// !restart, UI Restart and scheduled daily restart remain unchanged.
+    /// A pending warning is never persisted: disabling the bot or exiting WGS
+    /// cancels it so the server cannot restart unexpectedly the next morning.
+    /// </summary>
+    private string RunRestartWarningCommand(string[] args, string authorId)
+    {
+        if (!TangerangAnnouncementFormatter.IsAuthorizedAdmin(AllowedUserIds, authorId))
+            return "🚫 Administrator access required.";
+        var input = string.Join(" ", args);
+        var left = input.Split('|')[0].Trim();
+        var server = FindServer(left);
+        if (server == null)
+            return "❌ Server not found. Usage: !restartwarn <server name> | <seconds>";
+        if (!IsUserAllowedForServer(authorId, server.Id))
+            return "🚫 You're not authorized for that server.";
+        if (!TangerangAnnouncementFormatter.TryParseRestart(
+                input, server.DiscordRestartWarningSeconds, out _, out int seconds))
+            return "⚠ Restart warning must be between 30 and 600 seconds.";
+        return QueueWarnedRestart(server, seconds);
+    }
+
+    /// <summary>
+    /// Shared entry point for the local WGS button and authorized Discord
+    /// control command. Countdown is volatile and cancelled on bot shutdown.
+    /// </summary>
+    public string QueueWarnedRestart(GameServer server, int seconds)
+    {
+        if (server.Status != ServerStatus.Running) return "Server is not running.";
+        if (RestartServer == null || !IsEnabled || !IsRunning)
+            return "Discord bot or restart callback unavailable.";
+        if (seconds is < 30 or > 600) return "Choose 30–600 seconds.";
+        if (!server.DiscordAnnouncementsEnabled || AnnouncementChannel(server) == null)
+            return "Enable announcements and a separate channel first.";
+
+        var pending = new PendingWarnedRestart(
+            CancellationTokenSource.CreateLinkedTokenSource(_cts.Token),
+            server.LastStarted);
+        if (!_pendingWarnedRestarts.TryAdd(server.Id, pending))
+        {
+            pending.Dispose();
+            return "A warned restart is already pending.";
+        }
+
+        _ = Task.Run(() => ExecuteWarnedRestartAsync(server, seconds, pending));
+        return $"Warned restart requested for {server.DisplayName} ({seconds}s).";
+    }
+
+    public async Task<bool> CancelWarnedRestartAsync(GameServer server)
+    {
+        if (!_pendingWarnedRestarts.TryGetValue(server.Id, out var pending)
+            || !pending.TryCancel()) return false;
+        _pendingWarnedRestarts.TryRemove(server.Id, out _);
+        await PostAnnouncementAsync(server,
+            $"✅ **{TangerangAnnouncementFormatter.Clean(server.DisplayName)}** scheduled restart cancelled.",
+            CancellationToken.None);
+        return true;
+    }
+
+    private async Task ExecuteWarnedRestartAsync(
+        GameServer server, int seconds, PendingWarnedRestart pending)
+    {
+        var token = pending.Cancellation.Token;
+        try
+        {
+            int previous = seconds;
+            foreach (int remaining in TangerangAnnouncementFormatter.RestartCheckpoints(seconds))
+            {
+                await Task.Delay(TimeSpan.FromSeconds(previous - remaining), token);
+                token.ThrowIfCancellationRequested();
+                if (server.Status != ServerStatus.Running
+                    || !server.DiscordAnnouncementsEnabled) return;
+
+                var warning = TangerangAnnouncementFormatter.RestartWarning(server, remaining);
+                if (!await PostAnnouncementAsync(server, warning, token))
+                {
+                    StatusChanged?.Invoke("⚠ Warned restart cancelled: Discord notice could not be delivered.");
+                    return;
+                }
+                previous = remaining;
+            }
+
+            await Task.Delay(TimeSpan.FromSeconds(previous), token);
+            token.ThrowIfCancellationRequested();
+            if (server.Status != ServerStatus.Running || !IsEnabled
+                || server.LastStarted != pending.ServerStartedAt) return;
+
+            // A cancel racing the restart must either win before this gate
+            // or return "not cancelled" once execution has already begun.
+            if (!pending.Gate.TryBeginRestart()) return;
+
+            // Use the same RestartServer callback as the existing admin button.
+            // This goes through ServerViewModel.RestartCommand and its normal
+            // backup / stop / start logic rather than forcibly killing Valheim.
+            if (RestartServer != null) await RestartServer(server.Id);
+        }
+        catch (OperationCanceledException) { /* explicit cancel or WGS shutdown */ }
+        catch (Exception ex)
+        {
+            StatusChanged?.Invoke($"⚠ Warned restart failed: {ex.GetType().Name}");
+        }
+        finally
+        {
+            _pendingWarnedRestarts.TryRemove(server.Id, out _);
+            pending.Dispose();
+        }
+    }
+
+    private async Task<string> CancelRestartWarningCommandAsync(
+        string[] args, string authorId, CancellationToken ct)
+    {
+        if (!TangerangAnnouncementFormatter.IsAuthorizedAdmin(AllowedUserIds, authorId))
+            return "🚫 Administrator access required.";
+        var server = FindServer(string.Join(" ", args).Trim());
+        if (server == null) return "❌ Server not found.";
+        if (!IsUserAllowedForServer(authorId, server.Id))
+            return "🚫 You're not authorized for that server.";
+        var cancelled = await CancelWarnedRestartAsync(server);
+        return cancelled ? $"✅ Warned restart cancelled for **{server.DisplayName}**."
+                         : "ℹ️ No warned restart is pending.";
+    }
+
     // ── Discord HTTP ──────────────────────────────────────────────────────────
 
     private async Task SendMessage(string content, CancellationToken ct = default)
@@ -972,7 +1275,8 @@ public class DiscordBotService : IDisposable
         {
             // Discord has a 2000-char limit
             if (content.Length > 1990) content = content[..1990] + "…";
-            var payload = JsonConvert.SerializeObject(new { content });
+            var payload = JsonConvert.SerializeObject(
+                TangerangAnnouncementFormatter.DiscordPayload(content));
             var req     = new StringContent(payload, Encoding.UTF8, "application/json");
             await _http.PostAsync(
                 $"https://discord.com/api/v10/channels/{ChannelId}/messages",

@@ -1,0 +1,32 @@
+name: Tangerang Announcement Center validation
+
+on:
+  push:
+    branches:
+      - 'feature/announcement-center'
+  pull_request:
+    branches:
+      - 'feature/discord-playfab-board'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-tests:
+    runs-on: windows-latest
+    steps:
+      - name: Check out Tangerang WGS
+        uses: actions/checkout@v4
+      - name: Install .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Compile WGS and ServiceHost
+        run: dotnet build WindowsGameServer.sln --configuration Debug
+      - name: Run health and Discord join-code guard tests
+        run: dotnet run --project WGS.HealthChecks.Tests/WGS.HealthChecks.Tests.csproj --configuration Debug
+      - name: Run Xbox, PlayFab and join-code replay tests
+        run: dotnet run --project WGS.Crossplay.Tests/WGS.Crossplay.Tests.csproj --configuration Debug
+      - name: Run Tangerang Announcement Center tests
+        run: dotnet run --project WGS.Announcement.Tests/WGS.Announcement.Tests.csproj --configuration Debug
