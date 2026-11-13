@@ -28,6 +28,7 @@ public class ConfigService
         TangerangManagedPaths.ResolveHome(
             Environment.GetEnvironmentVariable("TANGERANG_WGS_HOME"), IsTangerangDev);
     public static bool UsesManagedData => ManagedRoot is not null;
+    public static string? ManagedHome => ManagedRoot;
     static readonly string DataDir =
         TangerangManagedPaths.DataDir(ExeDir, IsTangerangDev, ManagedRoot);
 
