@@ -22,8 +22,14 @@ public class ConfigService
     // This value is resolved once at startup, before any settings are loaded.
     private static readonly bool IsTangerangDev =
         Environment.GetEnvironmentVariable("TANGERANG_WGS_DEV") == "1";
-    static readonly string DataDir = Path.Combine(ExeDir,
-        IsTangerangDev ? "Tangerang_DevData" : "WGS_Data");
+    // Explicit managed mode keeps Data, Servers and Backups outside the
+    // published App folder, so replacing binaries cannot erase game worlds.
+    private static readonly string? ManagedRoot =
+        TangerangManagedPaths.ResolveHome(
+            Environment.GetEnvironmentVariable("TANGERANG_WGS_HOME"), IsTangerangDev);
+    public static bool UsesManagedData => ManagedRoot is not null;
+    static readonly string DataDir =
+        TangerangManagedPaths.DataDir(ExeDir, IsTangerangDev, ManagedRoot);
 
     /// <summary>Set to the old %AppData%\WGS path only when a migration actually ran this
     /// startup — App.xaml.cs uses this to decide whether to ask the user, once, whether to
@@ -49,7 +55,7 @@ public class ConfigService
     {
         // The dev sandbox starts empty. Never import historic live server
         // records, credentials or auto-start settings from %AppData%\WGS.
-        if (IsTangerangDev) return;
+        if (IsTangerangDev || UsesManagedData) return;
         if (Directory.Exists(DataDir)) return; // already migrated (or a fresh install)
         var oldPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "WGS");
         if (!Directory.Exists(oldPath)) return; // fresh install, nothing to migrate
@@ -127,10 +133,10 @@ public class ConfigService
         AppDataPath        = DataDir;
         ServersFile        = Path.Combine(AppDataPath, "servers.json");
         SettingsFile       = Path.Combine(AppDataPath, "settings.json");
-        DefaultInstallRoot = Path.Combine(ExeDir,
-            IsTangerangDev ? "Tangerang_DevServers" : "servers");
-        BackupPath         = Path.Combine(ExeDir,
-            IsTangerangDev ? "Tangerang_DevBackups" : "backups");
+        DefaultInstallRoot = TangerangManagedPaths.ServersDir(
+            ExeDir, IsTangerangDev, ManagedRoot);
+        BackupPath = TangerangManagedPaths.BackupsDir(
+            ExeDir, IsTangerangDev, ManagedRoot);
         Directory.CreateDirectory(AppDataPath);
         Directory.CreateDirectory(DefaultInstallRoot);
         LoadSettings();
