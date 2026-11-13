@@ -27,6 +27,9 @@ public static class UpdateCheckerService
     /// </summary>
     public static async Task<(bool HasUpdate, string LatestVersion, string DownloadUrl)> CheckAsync()
     {
+        // Do not offer upstream WGS updates to the managed Tangerang fork.
+        // The upstream zip replaces one exe, not our full published bundle.
+        if (ConfigService.UsesManagedData) return (false, "", "");
         try
         {
             var json = await _http.GetStringAsync(ApiUrl);
