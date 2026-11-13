@@ -1,0 +1,65 @@
+name: Tangerang Managed Server Manager
+
+on:
+  push:
+    branches:
+      - 'feature/tangerang-managed-install'
+  pull_request:
+    branches:
+      - 'feature/announcement-center'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-manager:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Build desktop manager and ServiceHost
+        run: dotnet build WindowsGameServer.sln --configuration Debug
+      - name: Test health policy and SteamCMD behavior
+        run: dotnet run --project WGS.HealthChecks.Tests/WGS.HealthChecks.Tests.csproj --configuration Debug
+      - name: Test Xbox and PlayFab crossplay
+        run: dotnet run --project WGS.Crossplay.Tests/WGS.Crossplay.Tests.csproj --configuration Debug
+      - name: Test Announcement Center
+        run: dotnet run --project WGS.Announcement.Tests/WGS.Announcement.Tests.csproj --configuration Debug
+      - name: Test managed data and game-directory isolation
+        run: dotnet run --project WGS.ManagedInstall.Tests/WGS.ManagedInstall.Tests.csproj --configuration Debug
+      - name: Parse PowerShell install and launch scripts
+        shell: pwsh
+        run: |
+          foreach ($path in @('scripts/Install-Tangerang.ps1', 'scripts/Start-TangerangManaged.ps1')) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $path), [ref]$tokens, [ref]$errors)
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error $_.ToString() }
+              throw "PowerShell syntax check failed for $path"
+            }
+            Write-Host "PASS PowerShell parser: $path"
+          }
+      - name: Publish self-contained win-x64 WPF manager
+        shell: pwsh
+        run: |
+          dotnet publish WGS/WGS.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugSymbols=false -p:DebugType=none -o ${{ github.workspace }}/tangerang-publish
+          if ($LASTEXITCODE -ne 0) { throw 'dotnet publish failed' }
+          if (!(Test-Path 'tangerang-publish/WindowsGameServer.exe')) { throw 'Missing manager EXE' }
+          Write-Host 'PASS Tangerang manager publish'
+      - name: Package manager preview build
+        shell: pwsh
+        run: |
+          Compress-Archive -Path tangerang-publish/* -DestinationPath Tangerang-WGS-preview-win-x64.zip
+          (Get-FileHash Tangerang-WGS-preview-win-x64.zip -Algorithm SHA256).Hash | Set-Content Tangerang-WGS-preview-win-x64.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Tangerang-WGS-preview-win-x64
+          path: |
+            Tangerang-WGS-preview-win-x64.zip
+            Tangerang-WGS-preview-win-x64.sha256
+          if-no-files-found: error
+          retention-days: 14
