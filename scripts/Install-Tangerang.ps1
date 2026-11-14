@@ -187,7 +187,12 @@ try {
     Write-Host "Settings: $installData"
     Write-Host "Backups: $installBackups"
     if ($oldApp) { Write-Host "Previous application retained: $oldApp" }
-    Write-Host ("Start with: & '" + (Join-Path $Root 'Start-Tangerang.ps1') + "'")
+    # Users with AllSigned/Restricted policy cannot invoke a .ps1 via
+    # PowerShell's "&" operator. This matches the desktop shortcut's
+    # per-process bypass and does not change global policy.
+    Write-Host ("Start with: powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"" +
+        (Join-Path $Root 'Start-Tangerang.ps1') + "`"")
+    Write-Host 'Or double-click the Tangerang WGS desktop shortcut.'
 }
 finally {
     # Remove only uncommitted temporary directories. Never delete worlds,
