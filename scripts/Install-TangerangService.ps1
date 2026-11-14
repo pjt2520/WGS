@@ -136,7 +136,10 @@ try {
             New-Service -Name $serviceName -BinaryPathName $binaryPath -DisplayName 'Tangerang WGS Engine' -StartupType Manual -ErrorAction Stop | Out-Null
         }
         catch {
-            Write-Warning "Service registration failed. Restore WGS settings from: $backupSettings"
+            # Registration is the commit point. If it fails, don't strand
+            # the desktop in service mode with no installed engine.
+            Copy-Item -LiteralPath $backupSettings -Destination $settingsFile -Force
+            Write-Warning "Service registration failed. Original settings restored from: $backupSettings"
             throw
         }
 
