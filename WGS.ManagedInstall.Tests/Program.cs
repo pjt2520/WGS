@@ -129,5 +129,18 @@ bool InvalidPayload()
 }
 Check("Non-array server status cannot overwrite the GUI model", InvalidPayload());
 
+Check("IPv4 loopback client is accepted",
+    TangerangServiceBootPolicy.IsLocalClient(System.Net.IPAddress.Loopback));
+Check("IPv6 loopback client is accepted",
+    TangerangServiceBootPolicy.IsLocalClient(System.Net.IPAddress.IPv6Loopback));
+Check("External IPv4 address cannot access service API",
+    !TangerangServiceBootPolicy.IsLocalClient(
+        System.Net.IPAddress.Parse("198.51.100.7")));
+Check("External IPv6 address cannot access service API",
+    !TangerangServiceBootPolicy.IsLocalClient(
+        System.Net.IPAddress.Parse("2001:db8::1")));
+Check("Missing client IP is refused",
+    !TangerangServiceBootPolicy.IsLocalClient(null));
+
 Console.WriteLine($"Results: {passed} passed, {failed} failed.");
 return failed == 0 ? 0 : 1;
