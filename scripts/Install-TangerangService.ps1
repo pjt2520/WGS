@@ -150,7 +150,9 @@ try {
 
             # LocalService is significantly less privileged than SYSTEM.
             # Avoid storing a password or granting administrator rights.
-            & sc.exe config $serviceName obj= 'NT AUTHORITY\LocalService' password= '' | Out-Null
+            # Built-in LocalService does not need a service password.
+            # Avoid PowerShell 5.1 native-command empty-argument elision.
+            & sc.exe config $serviceName obj= 'NT AUTHORITY\LocalService' | Out-Null
             if ($LASTEXITCODE -ne 0) { throw 'Could not configure LocalService identity.' }
             & sc.exe sidtype $serviceName unrestricted | Out-Null
             if ($LASTEXITCODE -ne 0) { throw 'Could not enable isolated Windows service SID.' }
