@@ -283,6 +283,16 @@ public class Worker(ILogger<Worker> logger) : BackgroundService
         };
 
         webApi.GetOnlinePlayers = id => backend.GetOnlinePlayersAsync(manager.GetServer(id) ?? FindServer(id)!).GetAwaiter().GetResult();
+        // A PlayFab invite belongs to the current running process only.
+        // This authenticated endpoint supports a detached WPF client without
+        // persisting a stale join code into servers.json.
+        webApi.GetValheimJoinCode = id =>
+        {
+            var live = manager.GetServer(id);
+            return live?.Status == ServerStatus.Running && live.GameId == "valheim"
+                ? manager.GetInstance(id)?.ValheimPlayers?.GetCurrentJoinCode()
+                : null;
+        };
 
         // Persistent token: a real service must hand out the same token across restarts, since
         // a WPF client's "Service mode" setting (Settings → Service mode → Access token) has to
