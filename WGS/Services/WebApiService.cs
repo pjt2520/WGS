@@ -378,6 +378,15 @@ public class WebApiService : IDisposable
         // the point: this is how a dashboard user gets one in the first place).
         if (req.HttpMethod == "POST" && path == "/api/login")
         {
+            // ServiceHost disables the dashboard: don't expose the GUI's
+            // default account login endpoint to a background management API.
+            // Only the installer-provisioned bearer token can control worlds.
+            if (_loopbackOnly && !DashboardEnabled)
+            {
+                resp.StatusCode = 403;
+                await SendJson(resp, new { error = "Desktop account login disabled for the service engine" });
+                return;
+            }
             using var loginReader = new System.IO.StreamReader(req.InputStream);
             var loginBody = await loginReader.ReadToEndAsync();
             JsonDocument loginDoc;
@@ -405,7 +414,11 @@ public class WebApiService : IDisposable
         WgsUser? authedUser = null;
         if (path.StartsWith("/api"))
         {
-            var raw   = req.Headers["Authorization"] ?? req.QueryString["token"] ?? string.Empty;
+            // Query-string secrets leak into browser history and reverse
+            // proxy logs. The service accepts the Authorization header only.
+            var raw   = _loopbackOnly
+                ? req.Headers["Authorization"] ?? string.Empty
+                : req.Headers["Authorization"] ?? req.QueryString["token"] ?? string.Empty;
             var token = raw.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) ? raw[7..] : raw;
 
             bool isApiToken  = token.Equals(Token, StringComparison.OrdinalIgnoreCase);
