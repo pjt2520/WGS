@@ -1,0 +1,61 @@
+name: Tangerang Service Foundation
+
+on:
+  push:
+    branches:
+      - 'feature/tangerang-service-foundation'
+  pull_request:
+    branches:
+      - 'feature/tangerang-managed-install'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  service-foundation:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Build WGS + detached ServiceHost
+        run: dotnet build WindowsGameServer.sln --configuration Debug
+      - name: Health and SteamCMD regression tests
+        run: dotnet run --project WGS.HealthChecks.Tests/WGS.HealthChecks.Tests.csproj --configuration Debug
+      - name: Crossplay tracking regression tests
+        run: dotnet run --project WGS.Crossplay.Tests/WGS.Crossplay.Tests.csproj --configuration Debug
+      - name: Discord Announcement Center tests
+        run: dotnet run --project WGS.Announcement.Tests/WGS.Announcement.Tests.csproj --configuration Debug
+      - name: Managed paths, ownership, and service status tests
+        run: dotnet run --project WGS.ManagedInstall.Tests/WGS.ManagedInstall.Tests.csproj --configuration Debug
+      - name: Publish headless ServiceHost self-contained for win-x64
+        shell: pwsh
+        run: |
+          dotnet publish WGS.ServiceHost/WGS.ServiceHost.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugSymbols=false -p:DebugType=none -o service-publish
+          if ($LASTEXITCODE -ne 0) { throw 'ServiceHost publish failed' }
+          if (!(Test-Path 'service-publish/WGS.ServiceHost.exe')) { throw 'Missing service host EXE' }
+      - name: Validate PowerShell deployment scripts
+        shell: pwsh
+        run: |
+          $paths = @('scripts/Install-Tangerang.ps1', 'scripts/Start-TangerangManaged.ps1', 'scripts/Install-TangerangService.ps1')
+          foreach ($path in $paths) {
+            $t = $null; $e = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $path), [ref]$t, [ref]$e)
+            if ($e.Count -gt 0) { $e | ForEach-Object { Write-Error $_.ToString() }; throw "Invalid syntax: $path" }
+            Write-Host "PASS PowerShell parser: $path"
+          }
+      - name: Prepare ServiceHost preview artifact
+        shell: pwsh
+        run: |
+          Compress-Archive -Path service-publish/* -DestinationPath Tangerang-ServiceHost-preview-win-x64.zip
+          (Get-FileHash Tangerang-ServiceHost-preview-win-x64.zip -Algorithm SHA256).Hash | Set-Content Tangerang-ServiceHost-preview-win-x64.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Tangerang-ServiceHost-preview-win-x64
+          path: |
+            Tangerang-ServiceHost-preview-win-x64.zip
+            Tangerang-ServiceHost-preview-win-x64.sha256
+          retention-days: 14
+          if-no-files-found: error
