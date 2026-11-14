@@ -420,4 +420,3 @@ public class Worker(ILogger<Worker> logger) : BackgroundService
         finally { _ownership?.Dispose(); _ownership = null; }
     }
 }
-}
