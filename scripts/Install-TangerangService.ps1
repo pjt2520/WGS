@@ -126,22 +126,63 @@ try {
             throw
         }
 
-        # A real Windows service may use LocalSystem in v1 preview. All its
-        # operations must use the same absolute managed Data/Servers paths.
-        # User-scoped DPAPI secrets cannot be decrypted by LocalSystem:
-        # Discord bot ownership is intentionally NOT transferred in this PR.
-        $serviceExe = Join-Path $installed 'WGS.ServiceHost.exe'
+        # Never run a LocalSystem service using binaries writable by a
+        # normal user. Copy the *compiled* engine to Program Files under
+        # administrator control. Durable Data/Servers remain under Root.
+        $protectedEngine = Join-Path $env:ProgramFiles 'TangerangWGS\Engine'
+        if (Test-Path -LiteralPath $protectedEngine) {
+            throw "Protected service binary location already exists: $protectedEngine. Review it before registration."
+        }
+        New-Item -ItemType Directory -Path $protectedEngine -Force | Out-Null
+        foreach ($binary in (Get-ChildItem -LiteralPath $installed -Force)) {
+            Copy-Item -LiteralPath $binary.FullName -Destination $protectedEngine -Recurse -Force -ErrorAction Stop
+        }
+        $serviceExe = Join-Path $protectedEngine 'WGS.ServiceHost.exe'
+        if (-not (Test-Path -LiteralPath $serviceExe -PathType Leaf)) {
+            throw "Protected engine publish missing: $serviceExe"
+        }
         $binaryPath = '"' + $serviceExe + '" --tangerang-home "' + $Root + '"'
+
+        $created = $false
         try {
             New-Service -Name $serviceName -BinaryPathName $binaryPath -DisplayName 'Tangerang WGS Engine' -StartupType Manual -ErrorAction Stop | Out-Null
+            $created = $true
+
+            # LocalService is significantly less privileged than SYSTEM.
+            # Avoid storing a password or granting administrator rights.
+            & sc.exe config $serviceName obj= 'NT AUTHORITY\LocalService' password= '' | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'Could not configure LocalService identity.' }
+            & sc.exe sidtype $serviceName unrestricted | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'Could not enable isolated Windows service SID.' }
+
+            $serviceSid = 'NT SERVICE\' + $serviceName
+            $rootGrant = $serviceSid + ':(RX)'
+            $modifyGrant = $serviceSid + ':(OI)(CI)M'
+            & icacls.exe $Root '/grant' $rootGrant | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'Could not grant service access to managed root.' }
+
+            foreach ($dir in @('Data', 'Servers', 'Backups', 'Logs')) {
+                $target = Join-Path $Root $dir
+                New-Item -ItemType Directory -Path $target -Force | Out-Null
+                & icacls.exe $target '/grant' $modifyGrant '/T' | Out-Null
+                if ($LASTEXITCODE -ne 0) {
+                    throw "Could not grant service write access to $target"
+                }
+            }
         }
         catch {
-            # Registration is the commit point. If it fails, don't strand
-            # the desktop in service mode with no installed engine.
+            if ($created) {
+                & sc.exe delete $serviceName | Out-Null
+                Write-Warning 'Registration failed; service deletion requested. Review with Get-Service.'
+            }
+            # Service registration is the commit point. A failure must not
+            # strand WGS in remote mode with no engine to connect to.
             Copy-Item -LiteralPath $backupSettings -Destination $settingsFile -Force
-            Write-Warning "Service registration failed. Original settings restored from: $backupSettings"
+            Write-Warning "Original WGS settings restored from: $backupSettings"
             throw
         }
+        Write-Host "Protected engine binary: $serviceExe"
+        Write-Host 'Windows service account: NT AUTHORITY\LocalService'
 
         # Configure crash recovery only; do not enable Windows startup yet.
         # Recovery settings do not restart the actual game when this service
