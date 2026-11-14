@@ -156,6 +156,14 @@ public class Worker(ILogger<Worker> logger) : BackgroundService
             var live = manager.GetServer(s.Id);
             s.Status         = live?.Status ?? ServerStatus.Stopped;
             s.CurrentPlayers = live?.CurrentPlayers ?? 0;
+            // Never promote a partially observed crossplay session to a
+            // fabricated authoritative 0/N count. The API serializes fresh
+            // GameServer objects from disk, so the live unknown flag must be
+            // copied explicitly (JSON deliberately ignores transient fields).
+            s.PlayerCountUnknown = live is null || live.PlayerCountUnknown ||
+                (s.GameId == "valheim" &&
+                 s.GameSpecificSettings.TryGetValue("crossplay", out var crossplay) &&
+                 crossplay == "true");
             return s;
         }).ToList();
         webApi.StartServer   = id => backend.StartAsync(FindServer(id)!);
