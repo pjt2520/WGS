@@ -126,6 +126,25 @@ public partial class App : System.Windows.Application
 
         // Load saved language
         var config = Services.GetRequiredService<ConfigService>();
+
+        // When the headless Windows service owns this managed home, the GUI
+        // must not reattach to, auto-start, or terminate its game processes.
+        // Users can reopen the desktop safely in Service Mode only.
+        if (ConfigService.UsesManagedData &&
+            !TangerangServiceBootPolicy.MayLaunchLocalGui(
+                config.ServiceModeEnabled,
+                TangerangServiceOwnership.IsOwned(config.AppDataPath)))
+        {
+            System.Windows.MessageBox.Show(
+                "The Tangerang Windows service currently owns these game worlds. " +
+                "Use the managed Service Mode GUI to connect to it. " +
+                "Do not start a second local engine against the same Servers folder.",
+                "Tangerang server already owned",
+                System.Windows.MessageBoxButton.OK,
+                System.Windows.MessageBoxImage.Warning);
+            Shutdown();
+            return;
+        }
         LocalizationService.Instance.Load(config);
 
         // One-time prompt after WGS's data folder was auto-migrated from %AppData% to next to
@@ -179,6 +198,11 @@ public partial class App : System.Windows.Application
             var manager = Services.GetRequiredService<ServerManagerService>();
 
             mainVm.Save();
+
+            // The background Windows service owns all game processes in remote
+            // mode. Closing the desktop client must not stop or kill them.
+            if (Services.GetRequiredService<ConfigService>().ServiceModeEnabled)
+                return;
 
             // When restarting for a self-update, leave servers running so the new
             // WGS instance can reattach to them via RunningPid.
