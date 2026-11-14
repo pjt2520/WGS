@@ -40,18 +40,20 @@ Closing the desktop no longer shuts down service-owned game processes.
   offline even though the Valheim game process continues under the service.
   Migrating the bot to the service requires a reviewed credentials handoff:
   the existing bot token is protected with Windows DPAPI CurrentUser and
-  cannot be decrypted by the LocalSystem service. Do not copy a plaintext
+  cannot be decrypted by the LocalService account. Do not copy a plaintext
   bot token into a service config file or disable encryption.
 - **Some server settings are read-only in service mode.** The desktop
   intentionally skips its 5-second writes to `servers.json` to avoid
   overwriting service-owned PID and settings. We still need a dedicated
   authenticated server-settings update API before calling this feature
   fully detachable in day-to-day configuration.
-- The service uses LocalSystem in this preview. This is higher privilege
-  than ideal; a future milestone should use a restricted service account
-  and explicitly grant it access only to the durable Tangerang folders.
+- The Windows service uses restricted **LocalService**, not LocalSystem.
+  Its executable is installed in the Administrator-controlled
+  `C:\Program Files\TangerangWGS\Engine` directory. Only the service SID
+  `NT SERVICE\TangerangWGSHost` receives Modify rights to managed
+  Data/Servers/Backups/Logs. This reduces privilege escalation risk.
 - Steam credentials protected with DPAPI CurrentUser cannot be decrypted
-  by the LocalSystem service. Anonymous SteamCMD installs work normally;
+  by the LocalService account. Anonymous SteamCMD installs work normally;
   authenticated/paid game downloads need separate credential handling.
 - WGS service mode is opt-in, and service may not be usable with every
   game-specific UI command until those commands use IServerBackend.
@@ -91,8 +93,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File '.\scripts\Install-Tange
 ```
 
 The installer updates the desktop to the same commit, backs up `settings.json`,
-configures `ServiceModeEnabled=true`, provisions its token, and registers
-`TangerangWGSHost` as **Manual** startup. **It does not start any game.**
+configures `ServiceModeEnabled=true`, provisions its token, copies the engine
+under protected `C:\Program Files\TangerangWGS\Engine`, and registers
+`TangerangWGSHost` under LocalService with restricted directory permissions
+and **Manual** startup. **It does not start any game.**
 
 **Supervised trial only, once you're ready:**
 
