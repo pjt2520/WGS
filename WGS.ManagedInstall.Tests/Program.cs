@@ -133,6 +133,9 @@ Check("IPv4 loopback client is accepted",
     TangerangServiceBootPolicy.IsLocalClient(System.Net.IPAddress.Loopback));
 Check("IPv6 loopback client is accepted",
     TangerangServiceBootPolicy.IsLocalClient(System.Net.IPAddress.IPv6Loopback));
+Check("IPv4-mapped IPv6 localhost is accepted",
+    TangerangServiceBootPolicy.IsLocalClient(
+        System.Net.IPAddress.Parse("::ffff:127.0.0.1")));
 Check("External IPv4 address cannot access service API",
     !TangerangServiceBootPolicy.IsLocalClient(
         System.Net.IPAddress.Parse("198.51.100.7")));
