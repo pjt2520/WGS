@@ -191,10 +191,23 @@ public class ConfigService
                 DefaultInstallRoot = d.DefaultInstallRoot;
             if (!string.IsNullOrEmpty(d.BackupPath) && Directory.Exists(d.BackupPath))
                 BackupPath = d.BackupPath;
-            SteamLogin    = d.SteamLogin;
-            SteamPassword = string.IsNullOrEmpty(d.SteamPasswordEncrypted)
-                ? string.Empty
-                : EncryptionService.Decrypt(d.SteamPasswordEncrypted);
+            SteamLogin = d.SteamLogin;
+            // Tangerang's background engine uses a different Windows service
+            // account from the person who originally saved Steam credentials.
+            // DPAPI CurrentUser encryption is expected to be unreadable there.
+            // Never discard the *rest* of settings.json when decryption fails,
+            // especially ServiceModeEnabled and the localhost control token.
+            // A fresh Steam login is required for authenticated game installs.
+            try
+            {
+                SteamPassword = string.IsNullOrEmpty(d.SteamPasswordEncrypted)
+                    ? string.Empty
+                    : EncryptionService.Decrypt(d.SteamPasswordEncrypted);
+            }
+            catch
+            {
+                SteamPassword = string.Empty;
+            }
             WebApiEnabled          = d.WebApiEnabled;
             WebApiPort             = d.WebApiPort > 0 ? d.WebApiPort : 8765;
             WebApiToken            = d.WebApiToken;
