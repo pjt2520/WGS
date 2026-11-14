@@ -29,9 +29,9 @@ public class Worker(ILogger<Worker> logger) : BackgroundService
         logger.LogInformation("WGS.ServiceHost starting");
 
         var config       = new ConfigService();
-        if (!ConfigService.UsesManagedData)
+        if (!ConfigService.UsesManagedData || !config.ServiceModeEnabled)
             throw new InvalidOperationException(
-                "Tangerang ServiceHost requires an explicit managed installation.");
+                "Tangerang ServiceHost requires the managed installer to enable Service Mode first.");
 
         // The lock remains open until all worlds have been stopped. No GUI
         // local-mode instance or second service host may own the same saves.
