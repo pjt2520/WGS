@@ -647,6 +647,13 @@ public partial class MainViewModel : BaseViewModel
 
             WpfApplication.Current?.Dispatcher?.BeginInvoke(new Action(() =>
             {
+                // A game deleted from the service's active inventory must
+                // never leave a previously cached PlayFab code on the GUI's
+                // Discord board.
+                var returnedIds = snapshots.Select(s => s.Id).ToHashSet();
+                foreach (var stale in _serviceJoinCodes.Keys.Where(id => !returnedIds.Contains(id)))
+                    _serviceJoinCodes.TryRemove(stale, out _);
+
                 foreach (var snapshot in snapshots)
                 {
                     var vm = FindServer(snapshot.Id);
