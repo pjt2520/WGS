@@ -46,8 +46,14 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File '.\scripts\Install-Tange
 6. Run the generated desktop shortcut, or:
 
 ```powershell
-& "$env:USERPROFILE\TangerangWGS\Start-Tangerang.ps1"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\TangerangWGS\Start-Tangerang.ps1"
 ```
+
+This syntax starts a new PowerShell process and is compatible with a
+local `Restricted` or `AllSigned` script policy, without permanently changing
+the user's execution policy. The installed desktop shortcut uses the same
+command. If an enforced MachinePolicy or UserPolicy blocks bypass, consult
+the policy administrator rather than weakening a managed security setting.
 
 7. Verify Tangerang Test appears once, its Install Path points to
    `%USERPROFILE%\TangerangWGS\Servers\valheim\Tangerang Test`,
