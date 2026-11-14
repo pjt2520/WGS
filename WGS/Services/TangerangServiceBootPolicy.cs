@@ -26,7 +26,10 @@ public static class TangerangServiceBootPolicy
     /// header, before processing any request in service-only mode.
     /// </summary>
     public static bool IsLocalClient(System.Net.IPAddress? address)
-        => address is not null && System.Net.IPAddress.IsLoopback(address);
+        => address is not null &&
+           (System.Net.IPAddress.IsLoopback(address) ||
+            (address.IsIPv4MappedToIPv6 &&
+             System.Net.IPAddress.IsLoopback(address.MapToIPv4())));
 
     /// <summary>
     /// Service mode must be configured explicitly before the UI launches.
