@@ -45,6 +45,12 @@ public partial class MainViewModel : BaseViewModel
     private readonly System.Timers.Timer       _autoSaveTimer;
     private readonly System.Timers.Timer       _usersRefreshTimer;
     private readonly System.Timers.Timer       _updateCheckTimer;
+    private readonly System.Timers.Timer?      _serviceStatusTimer;
+    private int _servicePollRunning;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string>
+        _serviceJoinCodes = new();
+    [ObservableProperty] private string _serviceConnectionText = string.Empty;
+    public bool IsDetachedServiceMode => _config.ServiceModeEnabled;
 
     public SettingsViewModel Settings { get; }
     public DashboardViewModel Dashboard { get; }
@@ -264,6 +270,19 @@ public partial class MainViewModel : BaseViewModel
         Servers.CollectionChanged += (_, _) => OnPropertyChanged(nameof(SortedServers));
         RemoteServers.CollectionChanged += (_, _) => OnPropertyChanged(nameof(SortedRemoteServers));
         LoadServers();
+
+        // Unlike the local manager, the headless ServiceHost owns the process
+        // state. Poll the authenticated loopback API and refresh this UI's
+        // view models, even after the desktop was closed and reopened.
+        if (_config.ServiceModeEnabled && _backend is RemoteServerBackend)
+        {
+            ServiceConnectionText = "Tangerang service: connecting...";
+            _serviceStatusTimer = new System.Timers.Timer(5000) { AutoReset = true };
+            _serviceStatusTimer.Elapsed += async (_, _) =>
+                await RefreshDetachedEngineStatusAsync();
+            _serviceStatusTimer.Start();
+            _ = RefreshDetachedEngineStatusAsync();
+        }
         _ = CheckForUpdateAsync();
 
         // Re-check for updates periodically — the startup-only check meant anyone leaving
@@ -289,7 +308,10 @@ public partial class MainViewModel : BaseViewModel
         _usersRefreshTimer.Elapsed += (_, _) => WpfApplication.Current?.Dispatcher?.Invoke(RefreshUsers);
         _usersRefreshTimer.Start();
 
-        _healthCheck.StartMonitoring();
+        // The headless service is the sole process owner. A GUI client must
+        // never run its own freeze-recovery decisions against those worlds.
+        if (!_config.ServiceModeEnabled)
+            _healthCheck.StartMonitoring();
 
         // Wire up Discord bot callbacks — same Dispatcher fix as WebAPI
         _bot.GetServers    = () => Servers.Select(v => v.Server);
@@ -298,13 +320,15 @@ public partial class MainViewModel : BaseViewModel
         // The Discord formatter verifies the server is Running, crossplay is
         // enabled, and its owner explicitly opted into sharing the code.
         _bot.GetCurrentValheimJoinCode = id =>
-            _manager.GetInstance(id)?.ValheimPlayers?.GetCurrentJoinCode();
+            _config.ServiceModeEnabled
+                ? (_serviceJoinCodes.TryGetValue(id, out var code) ? code : null)
+                : _manager.GetInstance(id)?.ValheimPlayers?.GetCurrentJoinCode();
         _bot.StartServer   = id => DispatchCommand(() => { var vm = FindServer(id); return vm != null ? vm.StartCommand.ExecuteAsync(null)        : Task.CompletedTask; });
         _bot.StopServer    = id => DispatchCommand(() => { var vm = FindServer(id); return vm != null ? vm.StopCommand.ExecuteAsync(null)         : Task.CompletedTask; });
         _bot.RestartServer = id => DispatchCommand(() => { var vm = FindServer(id); return vm != null ? vm.RestartCommand.ExecuteAsync(null)      : Task.CompletedTask; });
         _bot.UpdateServer  = id => DispatchCommand(() => { var vm = FindServer(id); return vm != null ? vm.UpdateCommand.ExecuteAsync(null)       : Task.CompletedTask; });
         _bot.BackupServer  = id => DispatchCommand(() => { var vm = FindServer(id); return vm != null ? vm.CreateBackupCommand.ExecuteAsync(null) : Task.CompletedTask; });
-        _bot.SendCmd       = async (id, cmd) => await manager.SendCommandAsync(id, cmd);
+        _bot.SendCmd       = (id, cmd) => _backend.SendConsoleCommandAsync(id, cmd);
 
         // Daily Restart (Settings checkbox) runs from ServerManagerService's own background delay
         // chain, not the UI thread — needs DispatchCommandAwaited (declared below, local functions
@@ -582,13 +606,14 @@ public partial class MainViewModel : BaseViewModel
         foreach (var srv in _config.LoadServers())
         {
             srv.Status = ServerStatus.Stopped;
-            bool reattached = _manager.TryReattach(srv);
+            // Remote mode never reattaches or claims a service-owned PID.
+            bool reattached = !_config.ServiceModeEnabled && _manager.TryReattach(srv);
             var vm = MakeVm(srv);
             vm.ServerNumber = num++;
             Servers.Add(vm);
-            if (!reattached && srv.WakeOnDemand)
+            if (!_config.ServiceModeEnabled && !reattached && srv.WakeOnDemand)
                 _wakeOnDemand.Arm(srv);
-            if (srv.AutoStart && !reattached)
+            if (!_config.ServiceModeEnabled && srv.AutoStart && !reattached)
                 _ = WpfApplication.Current?.Dispatcher?.InvokeAsync(() => vm.StartCommand.ExecuteAsync(null))
                         .Task.ContinueWith(t => Console.WriteLine($"[WGS] AutoStart failed for {srv.DisplayName}: {t.Exception?.InnerException?.Message}"),
                             TaskContinuationOptions.OnlyOnFaulted);
@@ -596,6 +621,63 @@ public partial class MainViewModel : BaseViewModel
         SelectedServer = Servers.FirstOrDefault();
         RefreshCounts();
         _tray.SetStatus(RunningCount, TotalServers);
+    }
+
+    /// <summary>
+    /// Read-only service heartbeat. A failed poll is NOT interpreted as
+    /// "every player left" and must not trigger any local restart. The
+    /// Windows service remains in control even when the UI goes offline.
+    /// </summary>
+    private async Task RefreshDetachedEngineStatusAsync()
+    {
+        if (_backend is not RemoteServerBackend remote ||
+            System.Threading.Interlocked.Exchange(ref _servicePollRunning, 1) != 0)
+            return;
+        try
+        {
+            var snapshots = await remote.GetServerStatusesAsync();
+            var codes = new Dictionary<string, string?>();
+            foreach (var entry in snapshots.Where(s => s.Status == ServerStatus.Running))
+            {
+                var vm = Servers.FirstOrDefault(v => v.Server.Id == entry.Id);
+                if (vm?.IsValheimCrossplay != true) continue;
+                try { codes[entry.Id] = await remote.GetCurrentValheimJoinCodeAsync(entry.Id); }
+                catch { codes[entry.Id] = null; }
+            }
+
+            WpfApplication.Current?.Dispatcher?.BeginInvoke(new Action(() =>
+            {
+                foreach (var snapshot in snapshots)
+                {
+                    var vm = FindServer(snapshot.Id);
+                    if (vm == null) continue;
+                    vm.ApplyRemoteStatus(snapshot);
+
+                    var code = codes.TryGetValue(snapshot.Id, out var currentCode)
+                        ? currentCode : null;
+                    if (code is null) _serviceJoinCodes.TryRemove(snapshot.Id, out _);
+                    else _serviceJoinCodes[snapshot.Id] = code;
+                    vm.ApplyRemoteJoinCode(code);
+                }
+
+                ServiceConnectionText = "Tangerang engine: connected (localhost)";
+                RefreshCounts();
+                _tray.SetStatus(RunningCount, TotalServers);
+            }));
+        }
+        catch (Exception)
+        {
+            // A brief connection failure may mean SCM is restarting the
+            // engine. Do not show a false zero player count or auto-start.
+            WpfApplication.Current?.Dispatcher?.BeginInvoke(new Action(() =>
+            {
+                ServiceConnectionText = "Tangerang engine: disconnected; retrying...";
+                _serviceJoinCodes.Clear();
+                foreach (var vm in Servers.Where(v => v.IsValheimCrossplay))
+                    vm.ApplyRemoteJoinCode(null);
+            }));
+        }
+        finally { System.Threading.Interlocked.Exchange(ref _servicePollRunning, 0); }
     }
 
     private ServerViewModel? FindServer(string id) => Servers.FirstOrDefault(v => v.Server.Id == id);
@@ -1309,7 +1391,14 @@ public partial class MainViewModel : BaseViewModel
     }
 
     [RelayCommand]
-    public void Save() => _config.SaveServers(Servers.Select(v => v.Server));
+    // The service is the only writer to managed servers.json while active.
+    // Client-side polling must never overwrite live PIDs/settings with stale
+    // objects from when the WPF window first opened.
+    public void Save()
+    {
+        if (_config.ServiceModeEnabled) return;
+        _config.SaveServers(Servers.Select(v => v.Server));
+    }
 
     private void RefreshCounts()
     {
