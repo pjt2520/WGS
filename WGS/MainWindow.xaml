@@ -48,6 +48,17 @@
                             <TextBlock Text="TEST SANDBOX  •  NO LIVE SERVERS" FontSize="11"
                                        FontWeight="SemiBold" Foreground="#FFCB6B"/>
                         </Border>
+                        <!-- The service owns the world files; this window
+                             is only a reconnectable remote console. -->
+                        <Border Visibility="{Binding IsDetachedServiceMode, Converter={StaticResource BoolToVis}}"
+                                Background="#183043" BorderBrush="#438DA4"
+                                BorderThickness="1" CornerRadius="4"
+                                Padding="8,4" Margin="12,0,0,0"
+                                VerticalAlignment="Center">
+                            <TextBlock Text="{Binding ServiceConnectionText}"
+                                       FontSize="11" FontWeight="SemiBold"
+                                       Foreground="#93D7EA"/>
+                        </Border>
                         <!-- Update available badge -->
                         <Border Visibility="{Binding UpdateAvailable, Converter={StaticResource BoolToVis}}"
                                 Background="#1a3a1a" BorderBrush="{StaticResource AccentGreenBrush}"

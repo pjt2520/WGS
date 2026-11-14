@@ -47,6 +47,8 @@ public class WebApiService : IDisposable
     public Func<string, string?>? GetUptime { get; set; }
     /// <summary>Returns online player list for a server (name, steamId, ping, connectedSeconds).</summary>
     public Func<string, IEnumerable<Models.OnlinePlayer>>? GetOnlinePlayers { get; set; }
+    /// <summary>Service-owned live six-digit join code. API requires bearer auth.</summary>
+    public Func<string, string?>? GetValheimJoinCode { get; set; }
     /// <summary>Returns list of backup entries for a server.</summary>
     public Func<string, IEnumerable<(string fileName, string sizeText, DateTime createdAt)>>? GetBackups { get; set; }
     /// <summary>Restores a backup by filename for a server. Returns error message or null on success.</summary>
@@ -165,15 +167,32 @@ public class WebApiService : IDisposable
 
     /// <summary>True when listener bound to all interfaces (reachable from network); false = localhost only.</summary>
     public bool BoundToAllInterfaces { get; private set; }
+    private bool _loopbackOnly;
 
     /// <summary>True when the web dashboard and full REST API are enabled. False = slave-only mode (master/slave comms still work).</summary>
     public bool DashboardEnabled { get; set; } = false;
 
-    public void Start(int port, string token)
+    public void Start(int port, string token, bool loopbackOnly = false)
     {
         Stop();
         Port  = port;
         Token = token;
+        _loopbackOnly = loopbackOnly;
+
+        // The Tangerang ServiceHost should only be manageable from the same
+        // PC. No inbound firewall hole, no wildcard bind, no UPnP. Existing
+        // optional remote dashboard behavior is untouched when false.
+        if (loopbackOnly)
+        {
+            _listener = new HttpListener();
+            _listener.Prefixes.Add($"http://localhost:{port}/");
+            _listener.Start();
+            BoundToAllInterfaces = false;
+            _cts = new CancellationTokenSource();
+            _serverTask = Task.Run(() => ListenLoop(_cts.Token));
+            IsRunning = true;
+            return;
+        }
 
         // Ensure Windows Firewall allows inbound traffic on this port
         AddFirewallRule(port);
@@ -275,6 +294,16 @@ public class WebApiService : IDisposable
     {
         var req  = ctx.Request;
         var resp = ctx.Response;
+        // HTTP.sys can create wildcard *TCP* listeners even for localhost
+        // URL reservations. Refuse any actual non-loopback remote IP before
+        // CORS handling, authentication or unauthenticated status routes.
+        if (_loopbackOnly && !TangerangServiceBootPolicy.IsLocalClient(
+                req.RemoteEndPoint?.Address))
+        {
+            resp.StatusCode = 403;
+            resp.Close();
+            return;
+        }
         resp.Headers["Access-Control-Allow-Origin"]  = "*";
         resp.Headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS";
         resp.Headers["Access-Control-Allow-Headers"] = "Authorization,Content-Type";
@@ -349,6 +378,15 @@ public class WebApiService : IDisposable
         // the point: this is how a dashboard user gets one in the first place).
         if (req.HttpMethod == "POST" && path == "/api/login")
         {
+            // ServiceHost disables the dashboard: don't expose the GUI's
+            // default account login endpoint to a background management API.
+            // Only the installer-provisioned bearer token can control worlds.
+            if (_loopbackOnly && !DashboardEnabled)
+            {
+                resp.StatusCode = 403;
+                await SendJson(resp, new { error = "Desktop account login disabled for the service engine" });
+                return;
+            }
             using var loginReader = new System.IO.StreamReader(req.InputStream);
             var loginBody = await loginReader.ReadToEndAsync();
             JsonDocument loginDoc;
@@ -376,7 +414,11 @@ public class WebApiService : IDisposable
         WgsUser? authedUser = null;
         if (path.StartsWith("/api"))
         {
-            var raw   = req.Headers["Authorization"] ?? req.QueryString["token"] ?? string.Empty;
+            // Query-string secrets leak into browser history and reverse
+            // proxy logs. The service accepts the Authorization header only.
+            var raw   = _loopbackOnly
+                ? req.Headers["Authorization"] ?? string.Empty
+                : req.Headers["Authorization"] ?? req.QueryString["token"] ?? string.Empty;
             var token = raw.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) ? raw[7..] : raw;
 
             bool isApiToken  = token.Equals(Token, StringComparison.OrdinalIgnoreCase);
@@ -456,6 +498,24 @@ public class WebApiService : IDisposable
                     Players = players,
                     Notes  = srv.Notes ?? "",
                 });
+                return;
+            }
+
+            // GET /api/servers/{id}/valheim-join-code, authenticated:
+            // expose only the current process tracker. Never serve a code
+            // persisted from a previous PlayFab session or a stopped world.
+            var joinMatch = System.Text.RegularExpressions.Regex.Match(
+                path, @"^/api/servers/([^/]+)/valheim-join-code$");
+            if (req.HttpMethod == "GET" && joinMatch.Success)
+            {
+                var sid = joinMatch.Groups[1].Value;
+                var srv = GetServers?.Invoke().FirstOrDefault(s => s.Id == sid);
+                if (srv == null) { resp.StatusCode = 404; await SendJson(resp, new { error = "Not found" }); return; }
+                var code = srv.Status == ServerStatus.Running
+                    ? GetValheimJoinCode?.Invoke(sid) : null;
+                if (code == null || !System.Text.RegularExpressions.Regex.IsMatch(code, @"^\d{6}$"))
+                    code = null;
+                await SendJson(resp, new { joinCode = code });
                 return;
             }
 

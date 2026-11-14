@@ -399,6 +399,29 @@ public partial class ServerViewModel : BaseViewModel, IDisposable
         _                         => "#8B949E",
     };
 
+    /// <summary>
+    /// Service-owned status is projected onto this client-only model. We do
+    /// NOT invoke the local manager's status events or auto-restart hooks:
+    /// only the Windows service is allowed to own the game process.
+    /// </summary>
+    public void ApplyRemoteStatus(TangerangServiceStatus remote)
+    {
+        if (remote.Id != Server.Id) return;
+        Server.Status = remote.Status;
+        Server.CurrentPlayers = remote.Players;
+        Server.PlayerCountUnknown = remote.PlayerCountUnknown;
+        RefreshStatus();
+        OnPropertyChanged(nameof(Server));
+    }
+
+    public void ApplyRemoteJoinCode(string? code)
+    {
+        if (!IsValheimCrossplay) return;
+        ValheimJoinCode = IsRunning
+            ? code ?? "Waiting for PlayFab..."
+            : "Server stopped";
+    }
+
     public bool IsRunning    => Server.Status == ServerStatus.Running;
     public bool IsStopped    => Server.Status is ServerStatus.Stopped or ServerStatus.NotInstalled;
     public bool CanStart     => Server.Status is ServerStatus.Stopped or ServerStatus.Error or ServerStatus.NotInstalled;

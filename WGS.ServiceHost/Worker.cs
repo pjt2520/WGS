@@ -19,12 +19,36 @@ public class Worker(ILogger<Worker> logger) : BackgroundService
     private WebApiService? _webApi;
     private ScheduledTaskService? _scheduler;
     private NetworkMonitorService? _network;
+    private FileStream? _ownership;
+    private LocalServerBackend? _backend;
+    private ServerManagerService? _manager;
+    private ConfigService? _config;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         logger.LogInformation("WGS.ServiceHost starting");
 
         var config       = new ConfigService();
+        if (!ConfigService.UsesManagedData || !config.ServiceModeEnabled)
+            throw new InvalidOperationException(
+                "Tangerang ServiceHost requires the managed installer to enable Service Mode first.");
+
+        // The lock remains open until all worlds have been stopped. No GUI
+        // local-mode instance or second service host may own the same saves.
+        _ownership = TangerangServiceOwnership.TryAcquire(config.AppDataPath)
+            ?? throw new InvalidOperationException(
+                "Another Tangerang engine already owns this managed Data folder.");
+        _config = config;
+
+        // The installer generates this token BEFORE running as LocalSystem.
+        // Never generate and save it here: ConfigService may have loaded
+        // DPAPI CurrentUser secrets encrypted for the interactive owner,
+        // and writing settings.json from LocalSystem could erase them.
+        if (string.IsNullOrWhiteSpace(config.WebApiToken)
+            || config.WebApiToken.Length < 32)
+            throw new InvalidOperationException(
+                "Service API token missing. Run the elevated service installer first.");
+
         var network      = new NetworkMonitorService();
         var manager      = new ServerManagerService(config, network);
         var steamCmd     = new SteamCmdService(config);
@@ -43,9 +67,11 @@ public class Worker(ILogger<Worker> logger) : BackgroundService
         var metrics      = new SystemMetricsService();
         _scheduler = scheduler;
         _network   = network;
+        _manager   = manager;
 
         var backend = new LocalServerBackend(manager, steamCmd, backup, notify, config, mods, sourceMod,
             configEditor, workshop, workshopDb, templates, scheduler, hygiene, presets);
+        _backend = backend;
 
         GameServer? FindServer(string id) => config.LoadServers().FirstOrDefault(s => s.Id == id);
 
@@ -113,7 +139,9 @@ public class Worker(ILogger<Worker> logger) : BackgroundService
             try { manager.TryReattach(s); } catch (Exception ex) { logger.LogWarning(ex, "Could not reattach {Server}", s.DisplayName); }
         }
 
-        var webApi = new WebApiService { Users = users, DashboardEnabled = true };
+        // No public dashboard or unauthenticated wake page. The only control
+        // surface is authenticated localhost HTTP for this PC's UI.
+        var webApi = new WebApiService { Users = users, DashboardEnabled = false };
         _webApi = webApi;
 
         // FiveM/RedM install can't show Views.BuildChannelDialog here (no WPF) — pause via the
@@ -128,6 +156,14 @@ public class Worker(ILogger<Worker> logger) : BackgroundService
             var live = manager.GetServer(s.Id);
             s.Status         = live?.Status ?? ServerStatus.Stopped;
             s.CurrentPlayers = live?.CurrentPlayers ?? 0;
+            // Never promote a partially observed crossplay session to a
+            // fabricated authoritative 0/N count. The API serializes fresh
+            // GameServer objects from disk, so the live unknown flag must be
+            // copied explicitly (JSON deliberately ignores transient fields).
+            s.PlayerCountUnknown = live is null || live.PlayerCountUnknown ||
+                (s.GameId == "valheim" &&
+                 s.GameSpecificSettings.TryGetValue("crossplay", out var crossplay) &&
+                 crossplay == "true");
             return s;
         }).ToList();
         webApi.StartServer   = id => backend.StartAsync(FindServer(id)!);
@@ -255,6 +291,16 @@ public class Worker(ILogger<Worker> logger) : BackgroundService
         };
 
         webApi.GetOnlinePlayers = id => backend.GetOnlinePlayersAsync(manager.GetServer(id) ?? FindServer(id)!).GetAwaiter().GetResult();
+        // A PlayFab invite belongs to the current running process only.
+        // This authenticated endpoint supports a detached WPF client without
+        // persisting a stale join code into servers.json.
+        webApi.GetValheimJoinCode = id =>
+        {
+            var live = manager.GetServer(id);
+            return live?.Status == ServerStatus.Running && live.GameId == "valheim"
+                ? manager.GetInstance(id)?.ValheimPlayers?.GetCurrentJoinCode()
+                : null;
+        };
 
         // Persistent token: a real service must hand out the same token across restarts, since
         // a WPF client's "Service mode" setting (Settings → Service mode → Access token) has to
@@ -262,22 +308,34 @@ public class Worker(ILogger<Worker> logger) : BackgroundService
         // earlier interactive smoke-test build) would break that. Client and service share the
         // same WGS_Data\settings.json only when co-located in the same folder (see ConfigService's
         // "data always next to exe" rule) — that's what makes this the right value to reuse.
-        if (string.IsNullOrWhiteSpace(config.WebApiToken))
-        {
-            config.WebApiToken = Guid.NewGuid().ToString("N");
-            config.Save();
-        }
-
-        webApi.Start(Port, config.WebApiToken);
+        webApi.Start(Port, config.WebApiToken, loopbackOnly: true);
 
         var serverCount = config.LoadServers().Count;
         logger.LogInformation("servers.json: {Path} ({Count} server(s))", config.ServersFile, serverCount);
-        logger.LogInformation("Listening on http://localhost:{Port}/ (all interfaces: {AllInterfaces})", Port, webApi.BoundToAllInterfaces);
-        Console.WriteLine("WGS.ServiceHost running.");
-        Console.WriteLine($"servers.json: {config.ServersFile}  ({serverCount} server(s))");
-        Console.WriteLine($"Listening on http://localhost:{Port}/  (all interfaces: {webApi.BoundToAllInterfaces})");
-        Console.WriteLine($"Token: {config.WebApiToken}");
-        Console.WriteLine("(This token is saved in settings.json — point a WPF client's Settings -> Service mode at this URL and token.)");
+        logger.LogInformation("Tangerang engine API restricted to {Url} (public access: {Public})",
+            TangerangServiceBootPolicy.LocalApiUrl, webApi.BoundToAllInterfaces);
+        if (webApi.BoundToAllInterfaces)
+            throw new InvalidOperationException("Unsafe service API: refused public HTTP listener.");
+        logger.LogInformation("Tangerang managed servers: {Count}; authenticated local control enabled", serverCount);
+
+        // Only explicitly opted-in AutoStart servers are started on cold boot.
+        // All migrated servers begin with AutoStart=false. Reattached servers
+        // keep their existing processes and are never launched a second time.
+        foreach (var persisted in config.LoadServers())
+        {
+            if (!TangerangServiceBootPolicy.ShouldAutoStart(persisted,
+                manager.IsRunning(persisted.Id))) continue;
+            try
+            {
+                logger.LogInformation("Auto-starting opted-in game server: {Name}", persisted.DisplayName);
+                await backend.StartAsync(persisted);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Auto-start failed for {Name}; service remains available",
+                    persisted.DisplayName);
+            }
+        }
 
         // The WPF client polls players per open server (ServerViewModel.FetchOnlinePlayersAsync); a headless
         // service has no view models, so without this nothing ever updated CurrentPlayers, recorded player
@@ -338,10 +396,35 @@ public class Worker(ILogger<Worker> logger) : BackgroundService
 
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
-        logger.LogInformation("WGS.ServiceHost stopping");
+        logger.LogInformation("Tangerang service stopping; saving and stopping managed games");
         _webApi?.Stop();
+
+        // Closing the WPF desktop does NOT stop any game. Stopping the actual
+        // Windows service, however, is an intentional engine shutdown: use
+        // the backend's normal graceful stop and backup behavior, not KillAll.
+        // An unresponsive game is logged; ServerManagerService's ProcessExit
+        // handler is only a last-resort cleanup if Windows terminates us.
+        if (_manager is not null && _backend is not null)
+        {
+            foreach (var game in _config?.LoadServers() ?? [])
+            {
+                if (!_manager.IsRunning(game.Id)) continue;
+                try
+                {
+                    await _backend.StopAsync(game).WaitAsync(
+                        TimeSpan.FromSeconds(30), cancellationToken);
+                    logger.LogInformation("Stopped {Game} during engine shutdown", game.DisplayName);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "Graceful stop incomplete for {Game}", game.DisplayName);
+                }
+            }
+        }
+
         _scheduler?.Dispose();
         _network?.Dispose();
-        await base.StopAsync(cancellationToken);
+        try { await base.StopAsync(cancellationToken); }
+        finally { _ownership?.Dispose(); _ownership = null; }
     }
 }

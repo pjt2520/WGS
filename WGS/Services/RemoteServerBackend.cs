@@ -89,6 +89,46 @@ public class RemoteServerBackend : IServerBackend
 
     private static string Enc(string s) => Uri.EscapeDataString(s);
 
+    /// <summary>
+    /// Lightweight heartbeat for the detachable Tangerang desktop. The API
+    /// returns verified service-owned status and player-count uncertainty.
+    /// A four-second timeout keeps an offline Windows Service from leaving
+    /// pending HTTP calls for ten minutes (long install operations need that
+    /// longer timeout; heartbeat requests do not).
+    /// </summary>
+    public async Task<IReadOnlyList<TangerangServiceStatus>> GetServerStatusesAsync()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(4));
+        using var req = Req(HttpMethod.Get, "/api/servers");
+        using var resp = await _http.SendAsync(req, timeout.Token);
+        var content = await resp.Content.ReadAsStringAsync(timeout.Token);
+        if (!resp.IsSuccessStatusCode)
+            throw new InvalidOperationException(ExtractError(content)
+                ?? $"Service returned HTTP {(int)resp.StatusCode}");
+        return TangerangServiceStatusParser.Parse(content);
+    }
+
+    /// <summary>
+    /// Authenticated read of the current registered PlayFab join code. This
+    /// is transient, not saved to servers.json or a stale Discord status.
+    /// Caller must still respect DiscordPublishJoinCode for public posting.
+    /// </summary>
+    public async Task<string?> GetCurrentValheimJoinCodeAsync(string id)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(4));
+        using var req = Req(HttpMethod.Get,
+            $"/api/servers/{Enc(id)}/valheim-join-code");
+        using var resp = await _http.SendAsync(req, timeout.Token);
+        if (!resp.IsSuccessStatusCode) return null;
+        using var json = JsonDocument.Parse(
+            await resp.Content.ReadAsStringAsync(timeout.Token));
+        var code = json.RootElement.TryGetProperty("joinCode", out var raw)
+            && raw.ValueKind == JsonValueKind.String ? raw.GetString() : null;
+        return code is not null &&
+            System.Text.RegularExpressions.Regex.IsMatch(code, @"^\d{6}$")
+            ? code : null;
+    }
+
     // ── Lifecycle ────────────────────────────────────────────────────────────
 
     // log is best-effort only — no progress channel over plain HTTP request/response, same as
