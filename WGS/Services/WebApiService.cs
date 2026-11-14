@@ -169,11 +169,26 @@ public class WebApiService : IDisposable
     /// <summary>True when the web dashboard and full REST API are enabled. False = slave-only mode (master/slave comms still work).</summary>
     public bool DashboardEnabled { get; set; } = false;
 
-    public void Start(int port, string token)
+    public void Start(int port, string token, bool loopbackOnly = false)
     {
         Stop();
         Port  = port;
         Token = token;
+
+        // The Tangerang ServiceHost should only be manageable from the same
+        // PC. No inbound firewall hole, no wildcard bind, no UPnP. Existing
+        // optional remote dashboard behavior is untouched when false.
+        if (loopbackOnly)
+        {
+            _listener = new HttpListener();
+            _listener.Prefixes.Add($"http://localhost:{port}/");
+            _listener.Start();
+            BoundToAllInterfaces = false;
+            _cts = new CancellationTokenSource();
+            _serverTask = Task.Run(() => ListenLoop(_cts.Token));
+            IsRunning = true;
+            return;
+        }
 
         // Ensure Windows Firewall allows inbound traffic on this port
         AddFirewallRule(port);
