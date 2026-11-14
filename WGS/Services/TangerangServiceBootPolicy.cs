@@ -21,6 +21,14 @@ public static class TangerangServiceBootPolicy
     public const string LocalApiUrl = "http://localhost:8766";
 
     /// <summary>
+    /// HTTP.sys may listen on a wildcard TCP socket even with a localhost
+    /// URL prefix. Inspect the REAL remote network address, not the Host
+    /// header, before processing any request in service-only mode.
+    /// </summary>
+    public static bool IsLocalClient(System.Net.IPAddress? address)
+        => address is not null && System.Net.IPAddress.IsLoopback(address);
+
+    /// <summary>
     /// Service mode must be configured explicitly before the UI launches.
     /// A local GUI cannot become a second game-engine owner.
     /// </summary>
