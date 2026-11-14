@@ -47,6 +47,8 @@ public class WebApiService : IDisposable
     public Func<string, string?>? GetUptime { get; set; }
     /// <summary>Returns online player list for a server (name, steamId, ping, connectedSeconds).</summary>
     public Func<string, IEnumerable<Models.OnlinePlayer>>? GetOnlinePlayers { get; set; }
+    /// <summary>Service-owned live six-digit join code. API requires bearer auth.</summary>
+    public Func<string, string?>? GetValheimJoinCode { get; set; }
     /// <summary>Returns list of backup entries for a server.</summary>
     public Func<string, IEnumerable<(string fileName, string sizeText, DateTime createdAt)>>? GetBackups { get; set; }
     /// <summary>Restores a backup by filename for a server. Returns error message or null on success.</summary>
@@ -471,6 +473,24 @@ public class WebApiService : IDisposable
                     Players = players,
                     Notes  = srv.Notes ?? "",
                 });
+                return;
+            }
+
+            // GET /api/servers/{id}/valheim-join-code, authenticated:
+            // expose only the current process tracker. Never serve a code
+            // persisted from a previous PlayFab session or a stopped world.
+            var joinMatch = System.Text.RegularExpressions.Regex.Match(
+                path, @"^/api/servers/([^/]+)/valheim-join-code$");
+            if (req.HttpMethod == "GET" && joinMatch.Success)
+            {
+                var sid = joinMatch.Groups[1].Value;
+                var srv = GetServers?.Invoke().FirstOrDefault(s => s.Id == sid);
+                if (srv == null) { resp.StatusCode = 404; await SendJson(resp, new { error = "Not found" }); return; }
+                var code = srv.Status == ServerStatus.Running
+                    ? GetValheimJoinCode?.Invoke(sid) : null;
+                if (code == null || !System.Text.RegularExpressions.Regex.IsMatch(code, @"^\d{6}$"))
+                    code = null;
+                await SendJson(resp, new { joinCode = code });
                 return;
             }
 
