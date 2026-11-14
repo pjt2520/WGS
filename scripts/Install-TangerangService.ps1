@@ -129,7 +129,9 @@ try {
         # Never run a LocalSystem service using binaries writable by a
         # normal user. Copy the *compiled* engine to Program Files under
         # administrator control. Durable Data/Servers remain under Root.
-        $protectedEngine = Join-Path $env:ProgramFiles 'TangerangWGS\Engine'
+        $created = $false
+        try {
+            $protectedEngine = Join-Path $env:ProgramFiles 'TangerangWGS\Engine'
         if (Test-Path -LiteralPath $protectedEngine) {
             throw "Protected service binary location already exists: $protectedEngine. Review it before registration."
         }
@@ -143,8 +145,6 @@ try {
         }
         $binaryPath = '"' + $serviceExe + '" --tangerang-home "' + $Root + '"'
 
-        $created = $false
-        try {
             New-Service -Name $serviceName -BinaryPathName $binaryPath -DisplayName 'Tangerang WGS Engine' -StartupType Manual -ErrorAction Stop | Out-Null
             $created = $true
 
