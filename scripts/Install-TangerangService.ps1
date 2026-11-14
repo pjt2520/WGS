@@ -130,6 +130,8 @@ try {
         # normal user. Copy the *compiled* engine to Program Files under
         # administrator control. Durable Data/Servers remain under Root.
         $created = $false
+        $urlReserved = $false
+        $localUrl = 'http://localhost:8766/'
         try {
             $protectedEngine = Join-Path $env:ProgramFiles 'TangerangWGS\Engine'
         if (Test-Path -LiteralPath $protectedEngine) {
@@ -158,6 +160,17 @@ try {
             if ($LASTEXITCODE -ne 0) { throw 'Could not enable isolated Windows service SID.' }
 
             $serviceSid = 'NT SERVICE\' + $serviceName
+
+            # HttpListener runs through HTTP.sys, which requires an explicit
+            # URL reservation for an unprivileged Windows service account.
+            # No network firewall port is opened: WebApiService also rejects
+            # every non-loopback client IP before authentication.
+            & netsh.exe http add urlacl "url=$localUrl" "user=$serviceSid" 'listen=yes' | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                throw "Failed to reserve localhost HTTP URL $localUrl for $serviceSid. Check for an existing reservation."
+            }
+            $urlReserved = $true
+
             $rootGrant = $serviceSid + ':(RX)'
             $modifyGrant = $serviceSid + ':(OI)(CI)M'
             & icacls.exe $Root '/grant' $rootGrant | Out-Null
@@ -173,6 +186,9 @@ try {
             }
         }
         catch {
+            if ($urlReserved) {
+                & netsh.exe http delete urlacl "url=$localUrl" | Out-Null
+            }
             if ($created) {
                 & sc.exe delete $serviceName | Out-Null
                 Write-Warning 'Registration failed; service deletion requested. Review with Get-Service.'
