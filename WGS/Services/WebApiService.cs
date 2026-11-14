@@ -167,6 +167,7 @@ public class WebApiService : IDisposable
 
     /// <summary>True when listener bound to all interfaces (reachable from network); false = localhost only.</summary>
     public bool BoundToAllInterfaces { get; private set; }
+    private bool _loopbackOnly;
 
     /// <summary>True when the web dashboard and full REST API are enabled. False = slave-only mode (master/slave comms still work).</summary>
     public bool DashboardEnabled { get; set; } = false;
@@ -176,6 +177,7 @@ public class WebApiService : IDisposable
         Stop();
         Port  = port;
         Token = token;
+        _loopbackOnly = loopbackOnly;
 
         // The Tangerang ServiceHost should only be manageable from the same
         // PC. No inbound firewall hole, no wildcard bind, no UPnP. Existing
@@ -292,6 +294,16 @@ public class WebApiService : IDisposable
     {
         var req  = ctx.Request;
         var resp = ctx.Response;
+        // HTTP.sys can create wildcard *TCP* listeners even for localhost
+        // URL reservations. Refuse any actual non-loopback remote IP before
+        // CORS handling, authentication or unauthenticated status routes.
+        if (_loopbackOnly && !TangerangServiceBootPolicy.IsLocalClient(
+                req.RemoteEndPoint?.Address))
+        {
+            resp.StatusCode = 403;
+            resp.Close();
+            return;
+        }
         resp.Headers["Access-Control-Allow-Origin"]  = "*";
         resp.Headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS";
         resp.Headers["Access-Control-Allow-Headers"] = "Authorization,Content-Type";
