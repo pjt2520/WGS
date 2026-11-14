@@ -130,7 +130,23 @@ public partial class SettingsViewModel : BaseViewModel
         {
             var exe = System.Diagnostics.Process.GetCurrentProcess().MainModule?.FileName
                       ?? System.IO.Path.Combine(AppContext.BaseDirectory, "WindowsGameServer.exe");
-            key.SetValue(AppName, $"\"{exe}\"");
+            if (ConfigService.UsesManagedData)
+            {
+                // Launch via the managed wrapper, not by executing the EXE
+                // directly: the wrapper supplies TANGERANG_WGS_HOME on login.
+                var launcher = System.IO.Path.Combine(
+                    ConfigService.ManagedHome!, "Start-Tangerang.ps1");
+                var powershell = System.IO.Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.Windows),
+                    "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+                key.SetValue(AppName,
+                    $"\"{powershell}\" -NoProfile -ExecutionPolicy Bypass " +
+                    $"-WindowStyle Hidden -File \"{launcher}\"");
+            }
+            else
+            {
+                key.SetValue(AppName, $"\"{exe}\"");
+            }
         }
         else
         {

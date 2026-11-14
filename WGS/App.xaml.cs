@@ -62,9 +62,13 @@ public partial class App : System.Windows.Application
 
         base.OnStartup(e);
 
-        var logPath = System.IO.Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "WGS", "crash.log");
+        // Keep crash diagnostics with the managed installation when one is
+        // explicitly configured. Do not mix our preview logs with upstream WGS.
+        var logPath = ConfigService.UsesManagedData
+            ? System.IO.Path.Combine(ConfigService.ManagedHome!, "Logs", "crash.log")
+            : System.IO.Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "WGS", "crash.log");
 
         void WriteLog(string msg)
         {
