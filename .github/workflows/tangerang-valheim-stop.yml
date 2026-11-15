@@ -1,9 +1,9 @@
 name: Tangerang Valheim Safe Stop
 on:
   push:
-    branches: ['feature/tangerang-valheim-safe-stop']
+    branches: ['feature/tangerang-valheim-safe-stop', 'feature/tangerang-1.5.43-integration']
   pull_request:
-    branches: ['feature/tangerang-service-foundation']
+    branches: ['feature/tangerang-service-foundation', 'feature/tangerang-valheim-safe-stop']
   workflow_dispatch:
 permissions:
   contents: read

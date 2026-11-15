@@ -41,6 +41,17 @@ public class BackupService
 
     public async Task<BackupEntry> CreateBackupAsync(GameServer server)
     {
+        if (server.GameId is "valheim" or "palworld")
+        {
+            bool alive = server.Status is ServerStatus.Running or ServerStatus.Starting or ServerStatus.Stopping;
+            if (server.RunningPid > 0)
+            {
+                try { using var process = System.Diagnostics.Process.GetProcessById(server.RunningPid); alive |= !process.HasExited; }
+                catch (ArgumentException) { }
+                catch { alive = true; }
+            }
+            if (alive) throw new InvalidOperationException("Stop the world before backing up its files. Live copies are not guaranteed consistent.");
+        }
         if (!Directory.Exists(server.InstallPath))
             throw new DirectoryNotFoundException("Install directory not found: " + server.InstallPath);
 

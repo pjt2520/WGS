@@ -9,7 +9,7 @@ namespace WGS.Services;
 /// empty. Parse errors leave the GUI's previously observed state intact.
 /// </summary>
 public sealed record TangerangServiceStatus(
-    string Id, ServerStatus Status, int Players, bool PlayerCountUnknown);
+    string Id, ServerStatus Status, int Players, bool PlayerCountUnknown, string? Uptime = null);
 
 public static class TangerangServiceStatusParser
 {
@@ -47,7 +47,8 @@ public static class TangerangServiceStatusParser
                     unknown = unknownEl.GetBoolean();
             }
 
-            result.Add(new TangerangServiceStatus(id, status, players, unknown));
+            result.Add(new TangerangServiceStatus(id, status, players, unknown,
+                item.TryGetProperty("Uptime", out var uptime) && uptime.ValueKind == JsonValueKind.String ? uptime.GetString() : null));
         }
         return result;
     }

@@ -20,6 +20,13 @@ namespace WGS.Services;
 /// </summary>
 public class LocalServerBackend : IServerBackend
 {
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> _operations = new();
+    private async Task SerializedAsync(GameServer server, Func<Task> operation)
+    {
+        var gate = _operations.GetOrAdd(server.Id, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync();
+        try { await operation(); } finally { gate.Release(); }
+    }
     private readonly ServerManagerService _manager;
     private readonly SteamCmdService      _steamCmd;
     private readonly BackupService        _backup;
@@ -82,12 +89,23 @@ public class LocalServerBackend : IServerBackend
     // catches purely to turn failures into AppendLog lines; that's a UI concern the future
     // caller can still do around this call.
 
-    public async Task StartAsync(GameServer server, IProgress<string>? log = null)
+    public Task StartAsync(GameServer server, IProgress<string>? log = null) => SerializedAsync(server, () => StartCoreAsync(server, log));
+
+    private async Task StartCoreAsync(GameServer server, IProgress<string>? log = null)
     {
         var plugin = GameRegistry.Get(server.GameId);
 
+        // A start for a server that is already running must not touch it: ServerManagerService.StartAsync first kills any
+        // process of the same executable in this install folder, so a second start (GUI auto-start, scheduler, API call)
+        // killed the running server and orphaned its tracking.
+        if (_manager.IsRunning(server.Id))
+        {
+            log?.Report("[WGS] The server is already running — start ignored.");
+            return;
+        }
+
         if ((server.UpdateOnStart || server.AutoUpdate) && plugin?.SteamAppId > 0)
-            await InstallAsync(server, log);
+            await InstallCoreAsync(server, log);
 
         if (server.BackupOnStart)
         {
@@ -113,7 +131,9 @@ public class LocalServerBackend : IServerBackend
         await _manager.StartAsync(server);
     }
 
-    public async Task StopAsync(GameServer server, IProgress<string>? log = null)
+    public Task StopAsync(GameServer server, IProgress<string>? log = null) => SerializedAsync(server, () => StopCoreAsync(server, log));
+
+    private async Task StopCoreAsync(GameServer server, IProgress<string>? log = null)
     {
         await _manager.StopAsync(server);
 
@@ -129,7 +149,7 @@ public class LocalServerBackend : IServerBackend
         }
     }
 
-    public async Task KillAsync(GameServer server) => await _manager.KillAsync(server);
+    public Task KillAsync(GameServer server) => SerializedAsync(server, () => _manager.KillAsync(server));
 
     // ── Install / Update ────────────────────────────────────────────────────
     // Mirrors ServerViewModel.InstallAsync + InstallViaSteamCmdAsync + InstallFromManualDownloadAsync
@@ -141,34 +161,26 @@ public class LocalServerBackend : IServerBackend
     // via RegisterBuildChannelChoice and waits for the choice through the web dashboard/API — see
     // InstallFromManualDownloadAsync below.
 
-    public async Task InstallAsync(GameServer server, IProgress<string>? log = null)
+    public Task InstallAsync(GameServer server, IProgress<string>? log = null) => SerializedAsync(server, () => InstallCoreAsync(server, log));
+
+    private async Task InstallCoreAsync(GameServer server, IProgress<string>? log = null)
     {
         var plugin = GameRegistry.Get(server.GameId);
         if (plugin == null) return;
 
-        var wasRunning = server.Status == ServerStatus.Running;
+        var wasRunning = _manager.IsRunning(server.Id) || server.Status == ServerStatus.Running;
         if (wasRunning)
         {
             log?.Report("[WGS] Server is running — stopping before update...");
             await _manager.StopAsync(server);
         }
 
-        try
-        {
-            if (plugin.SteamAppId <= 0)
-                await InstallFromManualDownloadAsync(server, plugin, log);
-            else
-                await InstallViaSteamCmdAsync(server, plugin, log);
-        }
-        finally
-        {
-            if (wasRunning)
-            {
-                log?.Report("[WGS] Update finished — restarting server...");
-                try { await _manager.StartAsync(server); }
-                catch (Exception ex) { log?.Report($"[ERR] Failed to restart server after update: {ex.Message}"); }
-            }
-        }
+        if (plugin.SteamAppId <= 0)
+            await InstallFromManualDownloadAsync(server, plugin, log);
+        else
+            await InstallViaSteamCmdAsync(server, plugin, log);
+        // Never restart after a failed update.
+        if (wasRunning) await _manager.StartAsync(server);
     }
 
     private async Task InstallViaSteamCmdAsync(GameServer server, IGamePlugin plugin, IProgress<string>? log)
@@ -375,7 +387,12 @@ public class LocalServerBackend : IServerBackend
     // (ServerViewModel.cs:1077-1081, a WpfMsgBox-free AppendLog + return there) becomes a thrown
     // exception here since there's no UI to show an inline warning in.
 
-    public async Task<BackupEntry> CreateBackupAsync(GameServer server) => await _backup.CreateBackupAsync(server);
+    public async Task<BackupEntry> CreateBackupAsync(GameServer server)
+    {
+        if (server.GameId is "valheim" or "palworld" && _manager.IsRunning(server.Id))
+            throw new InvalidOperationException("Stop the world before taking a consistent backup. BackupOnShutdown can do this automatically.");
+        return await _backup.CreateBackupAsync(server);
+    }
 
     public Task<List<BackupEntry>> GetBackupsAsync(GameServer server) => Task.FromResult(_backup.GetBackupsForServer(server));
 
@@ -742,6 +759,12 @@ public class LocalServerBackend : IServerBackend
                 }).ToList() ?? [];
             server.PlayerCountUnknown = true;
         }
+        else if (plugin is PalworldPlugin)
+        {
+            var result = await PalworldControl.GetPlayersAsync(server);
+            parsed = result.Players;
+            server.PlayerCountUnknown = result.Error != null;
+        }
         else if (plugin is IRestPlayersPlugin restPlugin)
         {
             parsed = await restPlugin.GetPlayersAsync(server);
@@ -839,7 +862,17 @@ public class LocalServerBackend : IServerBackend
         }
 
         // Keep the model in sync — same as ServerViewModel.FetchOnlinePlayersAsync.
+        server.PlayerCountVerifiedAtUtc = server.PlayerCountUnknown ? null : DateTime.UtcNow;
         server.CurrentPlayers = parsed.Count;
         return parsed;
     }
+
+    // ── Live state ───────────────────────────────────────────────────────────
+
+    public Task<List<(string Id, ServerStatus Status, string? Uptime)>> GetServerStatesAsync()
+        => Task.FromResult(_config.LoadServers()
+            .Select(s => (s.Id, _manager.GetServer(s.Id)?.Status ?? ServerStatus.Stopped,
+                _manager.GetInstance(s.Id)?.Uptime is TimeSpan t && t > TimeSpan.Zero
+                    ? $"{(int)t.TotalHours:D2}:{t.Minutes:D2}:{t.Seconds:D2}" : null))
+            .ToList());
 }

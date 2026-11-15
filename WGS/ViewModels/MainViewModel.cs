@@ -276,6 +276,7 @@ public partial class MainViewModel : BaseViewModel
         // view models, even after the desktop was closed and reopened.
         if (_config.ServiceModeEnabled && _backend is RemoteServerBackend)
         {
+            _scheduler.PauseSchedule();
             ServiceConnectionText = "Tangerang service: connecting...";
             _serviceStatusTimer = new System.Timers.Timer(5000) { AutoReset = true };
             _serviceStatusTimer.Elapsed += async (_, _) =>
@@ -308,10 +309,7 @@ public partial class MainViewModel : BaseViewModel
         _usersRefreshTimer.Elapsed += (_, _) => WpfApplication.Current?.Dispatcher?.Invoke(RefreshUsers);
         _usersRefreshTimer.Start();
 
-        // The headless service is the sole process owner. A GUI client must
-        // never run its own freeze-recovery decisions against those worlds.
-        if (!_config.ServiceModeEnabled)
-            _healthCheck.StartMonitoring();
+        if (!_config.UsesServiceBackend) _healthCheck.StartMonitoring(); // the service runs its own health monitoring
 
         // Wire up Discord bot callbacks — same Dispatcher fix as WebAPI
         _bot.GetServers    = () => Servers.Select(v => v.Server);
@@ -412,11 +410,16 @@ public partial class MainViewModel : BaseViewModel
         _webApi.RestartServer = id => DispatchCommand(() => { var vm = FindServer(id); return vm != null ? vm.RestartCommand.ExecuteAsync(null)       : Task.CompletedTask; });
         _webApi.UpdateServer  = id => DispatchCommand(() => { var vm = FindServer(id); return vm != null ? vm.UpdateCommand.ExecuteAsync(null)        : Task.CompletedTask; });
         _webApi.BackupServer  = id => DispatchCommand(() => { var vm = FindServer(id); return vm != null ? vm.CreateBackupCommand.ExecuteAsync(null)  : Task.CompletedTask; });
-        _webApi.SendCmd       = async (id, cmd) => await manager.SendCommandAsync(id, cmd);
+        _webApi.SendCmd       = async (id, cmd) => { if (_config.UsesServiceBackend) await _backend.SendConsoleCommandAsync(id, cmd); else await manager.SendCommandAsync(id, cmd); };
         _webApi.GetMetrics    = () => metrics.Current;
         _webApi.GetNetwork    = () => (network.CurrentBytesInPerSec, network.CurrentBytesOutPerSec);
         _webApi.GetLog = (id, offset) =>
         {
+            if (_config.UsesServiceBackend)
+            {
+                try { return _backend.GetLogAsync(id, offset).GetAwaiter().GetResult(); }
+                catch { return ([], [], offset); }
+            }
             var inst = manager.GetLogInstance(id);
             if (inst == null) return ([], [], offset);
             var (slice, next) = inst.GetLogSince(offset);
@@ -427,7 +430,9 @@ public partial class MainViewModel : BaseViewModel
             );
         };
         _webApi.Users     = users;
-        _webApi.GetUptime = id => manager.GetInstance(id)?.Uptime is TimeSpan t && t > TimeSpan.Zero
+        _webApi.GetUptime = id => _config.UsesServiceBackend
+            ? (FindServer(id) is { IsRunning: true } svm && svm.UptimeText != "--:--:--" ? svm.UptimeText : null)
+            : manager.GetInstance(id)?.Uptime is TimeSpan t && t > TimeSpan.Zero
             ? $"{(int)t.TotalHours:D2}:{t.Minutes:D2}:{t.Seconds:D2}"
             : null;
         _webApi.GetOnlinePlayers = id =>
@@ -606,12 +611,15 @@ public partial class MainViewModel : BaseViewModel
         foreach (var srv in _config.LoadServers())
         {
             srv.Status = ServerStatus.Stopped;
-            // Remote mode never reattaches or claims a service-owned PID.
-            bool reattached = !_config.ServiceModeEnabled && _manager.TryReattach(srv);
+            // In service mode the service owns the processes: don't reattach, arm Wake on Demand or auto-start here
+            // (that started a second copy / killed the one the service runs). The service handles Auto-start itself.
+            var serviceMode = _config.UsesServiceBackend;
+            bool reattached = !serviceMode && _manager.TryReattach(srv);
             var vm = MakeVm(srv);
             vm.ServerNumber = num++;
             Servers.Add(vm);
-            if (!_config.ServiceModeEnabled && !reattached && srv.WakeOnDemand)
+            if (serviceMode) continue;
+            if (!reattached && srv.WakeOnDemand)
                 _wakeOnDemand.Arm(srv);
             if (!_config.ServiceModeEnabled && srv.AutoStart && !reattached)
                 _ = WpfApplication.Current?.Dispatcher?.InvokeAsync(() => vm.StartCommand.ExecuteAsync(null))
@@ -659,6 +667,7 @@ public partial class MainViewModel : BaseViewModel
                     var vm = FindServer(snapshot.Id);
                     if (vm == null) continue;
                     vm.ApplyRemoteStatus(snapshot);
+                    vm.EnsureServicePerfMonitoring();
 
                     var code = codes.TryGetValue(snapshot.Id, out var currentCode)
                         ? currentCode : null;
@@ -669,8 +678,12 @@ public partial class MainViewModel : BaseViewModel
 
                 ServiceConnectionText = "Tangerang engine: connected (localhost)";
                 RefreshCounts();
+                OnPropertyChanged(nameof(HasRunningServers));
+                OnPropertyChanged(nameof(CanInstallUpdate));
                 _tray.SetStatus(RunningCount, TotalServers);
             }));
+            var logVms = WpfApplication.Current?.Dispatcher?.Invoke(() => Servers.ToList()) ?? [];
+            foreach (var vm in logVms) await vm.PollServiceLogAsync();
         }
         catch (Exception)
         {

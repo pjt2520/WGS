@@ -12,12 +12,12 @@ public static class SelfUpdateService
         string zipUrl,
         IProgress<(int pct, string msg)>? progress = null)
     {
-        if (ConfigService.UsesManagedData)
+        if (ConfigService.UsesManagedData || Environment.GetEnvironmentVariable("TANGERANG_WGS_DEV") == "1" || File.Exists(ValheimShutdown.HelperPath))
         {
             // Upstream updater swaps only one EXE. Our managed installation
             // uses a multi-file published bundle and a separate update tool.
             progress?.Report((0,
-                "Managed Tangerang installation: use Deploy-Tangerang.ps1 for updates."));
+                "Tangerang custom build: update the desktop, service and helper together using a tested Tangerang package."));
             return false;
         }
         var exePath = Environment.ProcessPath
@@ -81,7 +81,7 @@ del ""%~f0""
 
     public static bool ApplyAndRestart()
     {
-        if (ConfigService.UsesManagedData) return false;
+        if (ConfigService.UsesManagedData || Environment.GetEnvironmentVariable("TANGERANG_WGS_DEV") == "1" || File.Exists(ValheimShutdown.HelperPath)) return false;
         var exeDir  = Path.GetDirectoryName(
             Environment.ProcessPath
             ?? Path.Combine(AppContext.BaseDirectory, "WindowsGameServer.exe"))!;

@@ -16,6 +16,7 @@ if (args.Contains("-nographics"))
     await Task.Delay(Timeout.Infinite);
     return;
 }
+await PalworldChecks.RunAsync();
 Environment.SetEnvironmentVariable("TANGERANG_WGS_DEV", "1");
 Environment.SetEnvironmentVariable("TANGERANG_WGS_HOME", null);
 var exe = Environment.ProcessPath!;

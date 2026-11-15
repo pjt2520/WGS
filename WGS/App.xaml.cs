@@ -217,8 +217,8 @@ public partial class App : System.Windows.Application
                     var t = Task.Run(async () => {
                         try { await manager.StopAsync(serverVm.Server); } catch { }
                     });
-                    t.Wait(string.Equals(serverVm.Server.GameId, "valheim", StringComparison.OrdinalIgnoreCase)
-                        ? TimeSpan.FromSeconds(140) : TimeSpan.FromSeconds(5));
+                    t.Wait((serverVm.Server.GameId is "valheim" or "palworld")
+                        ? TimeSpan.FromSeconds(190) : TimeSpan.FromSeconds(5));
                 }
                 catch { }
             }
@@ -239,7 +239,7 @@ public partial class App : System.Windows.Application
         s.AddSingleton<IServerBackend>(sp =>
         {
             var config = sp.GetRequiredService<ConfigService>();
-            if (config.ServiceModeEnabled && !string.IsNullOrWhiteSpace(config.ServiceModeUrl))
+            if (config.UsesServiceBackend)
                 return new RemoteServerBackend(config.ServiceModeUrl, config.ServiceModeToken);
             return new LocalServerBackend(
                 sp.GetRequiredService<ServerManagerService>(),
