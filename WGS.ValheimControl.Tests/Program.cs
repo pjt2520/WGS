@@ -7,23 +7,29 @@ using WGS.Services;
 // Synthetic processes only: never opens a game installation or saved world.
 if (args.Length > 0 && (args[0] == "--fixture" || args[0] == "-nographics"))
 {
-    Console.CancelKeyPress += (_, e) =>
+    // A console-less legacy fixture must never register a Ctrl+C handler.
+    // Registration can initialize console handling asynchronously, racing
+    // FreeConsole and making this negative safety test machine-dependent.
+    bool noConsoleFixture = args.Contains("--no-console");
+    if (!noConsoleFixture)
     {
-        e.Cancel = true;
-        if (args.Contains("--ignore")) return;
-        Console.WriteLine("FIXTURE_SAVED");
-        Console.Out.Flush();
-        Environment.Exit(0);
-    };
+        Console.CancelKeyPress += (_, e) =>
+        {
+            e.Cancel = true;
+            if (args.Contains("--ignore")) return;
+            Console.WriteLine("FIXTURE_SAVED");
+            Console.Out.Flush();
+            Environment.Exit(0);
+        };
+    }
     if (args.Contains("--shared"))
     {
         var shared = Process.Start(new ProcessStartInfo(Environment.ProcessPath!, "--fixture")
         { UseShellExecute = false, CreateNoWindow = false, RedirectStandardOutput = true })!;
         await shared.StandardOutput.ReadLineAsync();
     }
-    // Registering CancelKeyPress can initialize a console in the runtime.
-    // Detach afterwards so this fixture really models a console-less process.
-    if (args.Contains("--no-console")) NativeConsole.FreeConsole();
+    // Detach from any inherited console before announcing readiness.
+    if (noConsoleFixture) NativeConsole.FreeConsole();
     Console.WriteLine("FIXTURE_READY"); Console.Out.Flush();
     await Task.Delay(Timeout.Infinite);
     return 0;
