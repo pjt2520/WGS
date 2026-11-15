@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
@@ -20,6 +21,9 @@ if (args.Length > 0 && (args[0] == "--fixture" || args[0] == "-nographics"))
         { UseShellExecute = false, CreateNoWindow = false, RedirectStandardOutput = true })!;
         await shared.StandardOutput.ReadLineAsync();
     }
+    // Registering CancelKeyPress can initialize a console in the runtime.
+    // Detach afterwards so this fixture really models a console-less process.
+    if (args.Contains("--no-console")) NativeConsole.FreeConsole();
     Console.WriteLine("FIXTURE_READY"); Console.Out.Flush();
     await Task.Delay(Timeout.Infinite);
     return 0;
@@ -104,7 +108,8 @@ try
         finally { if (!stubborn.Process.HasExited) stubborn.Process.Kill(entireProcessTree: true); }
     }
 
-    using var legacy = Process.Start(Fixture())!;
+    var legacyInfo = Fixture(); legacyInfo.Arguments += " --no-console";
+    using var legacy = Process.Start(legacyInfo)!;
     try
     {
         Check(await legacy.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(10)) == "FIXTURE_READY", "legacy fixture ready");
@@ -121,3 +126,9 @@ finally
 }
 Console.WriteLine($"{passed} Windows isolation checks passed.");
 return 0;
+
+internal static class NativeConsole
+{
+    [DllImport("kernel32.dll")]
+    internal static extern bool FreeConsole();
+}

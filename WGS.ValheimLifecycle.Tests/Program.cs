@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Diagnostics;
 using System.IO;
 using WGS.Models;
@@ -8,6 +9,9 @@ using WGS.Services;
 if (args.Contains("-nographics"))
 {
     Console.CancelKeyPress += (_, e) => { e.Cancel = true; Console.WriteLine("FIXTURE_SAVED"); Console.Out.Flush(); Environment.Exit(0); };
+    // Registering CancelKeyPress can initialize a console in the runtime.
+    // Detach afterwards so this fixture really models a console-less process.
+    if (args.Contains("--no-console")) NativeConsole.FreeConsole();
     Console.WriteLine("FIXTURE_READY"); Console.Out.Flush();
     await Task.Delay(Timeout.Infinite);
     return;
@@ -55,7 +59,7 @@ try
     Check(!manager.IsRunning(server.Id) && server.RunningPid == 0, "intentional Stop does not trigger crash restart");
     Check(manager.GetLogInstance(server.Id)!.GetLogSnapshot().Any(m => m.Text == "FIXTURE_SAVED"), "final game output remains available after Stop");
 
-    legacy = Process.Start(new ProcessStartInfo(fixtureExe, "-nographics")
+    legacy = Process.Start(new ProcessStartInfo(fixtureExe, "-nographics --no-console")
     { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true })!;
     await legacy.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(10));
     var old = Server(); old.RunningPid = legacy.Id;
@@ -86,3 +90,9 @@ finally
     File.Delete(fixtureExe);
 }
 Console.WriteLine($"{passed} lifecycle checks passed using only synthetic game processes.");
+
+internal static class NativeConsole
+{
+    [DllImport("kernel32.dll")]
+    internal static extern bool FreeConsole();
+}
