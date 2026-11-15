@@ -41,6 +41,18 @@ public class BackupService
 
     public async Task<BackupEntry> CreateBackupAsync(GameServer server)
     {
+        if (server.GameId is "valheim" or "palworld")
+        {
+            bool alive = server.Status is ServerStatus.Running or ServerStatus.Starting or ServerStatus.Stopping;
+            if (server.RunningPid > 0)
+            {
+                try { using var process = System.Diagnostics.Process.GetProcessById(server.RunningPid); alive |= !process.HasExited; }
+                catch (ArgumentException) { }
+                catch { alive = true; }
+            }
+            if (alive) throw new InvalidOperationException("Stop the world before backing up its files. Live copies are not guaranteed consistent.");
+            ServerManagerService.AssertNoProcessUsesInstallation(server);
+        }
         if (!Directory.Exists(server.InstallPath))
             throw new DirectoryNotFoundException("Install directory not found: " + server.InstallPath);
 
@@ -59,6 +71,9 @@ public class BackupService
             var fi  = new FileInfo(file);
             current[rel] = new FileState(rel, fi.Length, fi.LastWriteTimeUtc.Ticks);
         }
+
+        if (server.GameId is "valheim" or "palworld" && current.Count == 0)
+            throw new InvalidOperationException("No world save files found; refusing an empty backup.");
 
         // Decide full vs incremental
         var existing = GetBackupsForServer(server); // newest first
@@ -173,6 +188,7 @@ public class BackupService
 
     public async Task RestoreBackupAsync(GameServer server, string zipPath)
     {
+        ServerManagerService.AssertNoProcessUsesInstallation(server);
         var all = GetBackupsForServer(server).ToDictionary(b => b.FilePath);
         if (!all.TryGetValue(zipPath, out var target))
             target = new BackupEntry { FilePath = zipPath, IsIncremental = false };
@@ -180,15 +196,31 @@ public class BackupService
         // Walk the chain back to the nearest full backup, then restore oldest → newest
         var chain = new List<BackupEntry> { target };
         var cursor = target;
-        while (cursor.IsIncremental && !string.IsNullOrEmpty(cursor.BaseFilePath) && all.TryGetValue(cursor.BaseFilePath, out var baseEntry))
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { target.FilePath };
+        while (cursor.IsIncremental)
         {
-            chain.Add(baseEntry);
-            cursor = baseEntry;
+            if (string.IsNullOrEmpty(cursor.BaseFilePath) || !all.TryGetValue(cursor.BaseFilePath, out var baseEntry))
+                throw new InvalidOperationException("Incremental backup is missing its base; restore refused.");
+            if (!seen.Add(baseEntry.FilePath)) throw new InvalidOperationException("Cyclic backup chain; restore refused.");
+            chain.Add(baseEntry); cursor = baseEntry;
         }
         chain.Reverse();
 
         await Task.Run(() =>
         {
+            // Validate the complete chain before writing anything.
+            foreach (var entry in chain)
+            {
+                using var zip = ZipFile.OpenRead(entry.FilePath);
+                foreach (var item in zip.Entries)
+                {
+                    if (item.FullName != DeletedMarkerEntry) { _ = RestorePath(server.InstallPath, item.FullName); continue; }
+                    using var reader = new StreamReader(item.Open());
+                    string? line;
+                    while ((line = reader.ReadLine()) != null)
+                        if (!string.IsNullOrWhiteSpace(line)) _ = RestorePath(server.InstallPath, line.Trim());
+                }
+            }
             foreach (var entry in chain)
             {
                 using var zip = ZipFile.OpenRead(entry.FilePath);
@@ -205,7 +237,7 @@ public class BackupService
                         continue;
                     }
 
-                    var dest = Path.Combine(server.InstallPath, zipEntry.FullName);
+                    var dest = RestorePath(server.InstallPath, zipEntry.FullName);
                     var destDir = Path.GetDirectoryName(dest);
                     if (!string.IsNullOrEmpty(destDir)) Directory.CreateDirectory(destDir);
                     zipEntry.ExtractToFile(dest, overwrite: true);
@@ -213,11 +245,23 @@ public class BackupService
 
                 foreach (var rel in deletedList)
                 {
-                    try { var p = Path.Combine(server.InstallPath, rel); if (File.Exists(p)) File.Delete(p); }
+                    try { var p = RestorePath(server.InstallPath, rel); if (File.Exists(p)) File.Delete(p); }
                     catch { }
                 }
             }
         });
+    }
+
+    private static string RestorePath(string root, string relative)
+    {
+        var fullRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        var destination = Path.GetFullPath(Path.Combine(fullRoot, relative));
+        if (Path.IsPathRooted(relative) || relative.Contains(':') || !destination.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Backup contains a path outside the game installation.");
+        for (var part = destination; part != null && part.Length >= fullRoot.TrimEnd(Path.DirectorySeparatorChar).Length; part = Path.GetDirectoryName(part))
+            if ((File.Exists(part) || Directory.Exists(part)) && (File.GetAttributes(part) & FileAttributes.ReparsePoint) != 0)
+                throw new InvalidOperationException("Backup restore through a filesystem link is refused.");
+        return destination;
     }
 
     public List<BackupEntry> GetBackupsForServer(GameServer server)

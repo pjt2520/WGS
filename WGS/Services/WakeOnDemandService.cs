@@ -239,7 +239,7 @@ public sealed class WakeOnDemandService : IDisposable
                 var players = inst.Server.CurrentPlayers;
                 // A failed player query (A2S blocked, REST down, still booting) is not "empty": never
                 // count it towards the idle timeout, or a populated server would be shut down.
-                if (players > 0 || inst.Server.PlayerCountUnknown)
+                if (players > 0 || !inst.Server.HasFreshPlayerCount)
                 {
                     idleStart = DateTime.UtcNow; // reset idle clock
                 }
@@ -250,7 +250,12 @@ public sealed class WakeOnDemandService : IDisposable
                         _idleWatchers.Remove(server.Id);
                         _idleShutdownTimes[server.Id] = DateTime.UtcNow;
                     }
-                    try { await _manager.StopAsync(server); } catch { }
+                    try { await _manager.StopAsync(server); }
+                    catch (Exception ex)
+                    {
+                        _manager.InjectLogLine(server.Id, "[IdleShutdown] Stop failed; backup cancelled: " + ex.Message, ConsoleMessageType.Warning);
+                        return;
+                    }
                     if (server.BackupOnShutdown)
                     {
                         try { await _backup.CreateBackupAsync(server); ServerBackedUp?.Invoke(server.Id); } catch { }

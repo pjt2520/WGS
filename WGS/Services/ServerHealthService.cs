@@ -21,6 +21,8 @@ public class ServerHealthService : IDisposable
     private readonly ConcurrentDictionary<string, int> _failures = new();
 
     private System.Timers.Timer? _timer;
+    private int _checking;
+    private bool _disposed;
 
     // servers under active health-check surveillance
     private List<(GameServer Server, IGamePlugin Plugin)> _watched = [];
@@ -56,6 +58,8 @@ public class ServerHealthService : IDisposable
         _timer?.Stop();
         _timer?.Dispose();
         _timer = null;
+        _disposed = true;
+        _manager.StatusChanged -= OnStatusChanged;
     }
 
     // ── Status tracking ───────────────────────────────────────────────────────
@@ -87,6 +91,14 @@ public class ServerHealthService : IDisposable
 
     private async Task CheckAllAsync()
     {
+        if (_disposed || Interlocked.Exchange(ref _checking, 1) != 0) return;
+        try { await CheckSnapshotAsync(); }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("Health monitor: " + ex.Message); }
+        finally { Interlocked.Exchange(ref _checking, 0); }
+    }
+
+    private async Task CheckSnapshotAsync()
+    {
         if (!_config.HealthCheckEnabled) return;
 
         List<(GameServer Server, IGamePlugin Plugin)> snapshot;
@@ -107,7 +119,12 @@ public class ServerHealthService : IDisposable
                 continue;
             }
 
-            bool alive = await IsRespondingAsync(server, plugin);
+            if (_disposed) return;
+            // Allow boot/world loading to finish before classifying the game.
+            if (_manager.GetInstance(server.Id)?.Uptime < TimeSpan.FromMinutes(2)) continue;
+            PalworldHealth? palHealth = plugin is PalworldPlugin ? await PalworldControl.GetHealthAsync(server) : null;
+            bool alive = palHealth?.Healthy ?? await IsRespondingAsync(server, plugin);
+            if (palHealth != null && !alive) server.PlayerCountUnknown = true;
 
             if (alive)
             {
@@ -121,7 +138,14 @@ public class ServerHealthService : IDisposable
                 if (count >= threshold)
                 {
                     _failures[server.Id] = 0;
-                    await TriggerFreezeActionAsync(server);
+                    if (palHealth != null)
+                    {
+                        // The Nov 14 incident returned HTTP success with an unloaded world.
+                        // Degradation alone must not trigger save/restart against that world.
+                        _manager.InjectLogLine(server.Id, "[PalworldHealth] " + palHealth.Detail + "; automatic recovery withheld.", ConsoleMessageType.Error);
+                        await _notifications.NotifyAsync("Palworld health degraded", server.DisplayName + ": " + palHealth.Detail, "#D29922");
+                    }
+                    else await TriggerFreezeActionAsync(server);
                 }
             }
         }

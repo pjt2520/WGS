@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using WGS.Models;
+using WGS.Services;
 
 namespace WGS.Games;
 
@@ -38,6 +39,7 @@ public class PalworldPlugin : GamePluginBase, IWorkshopPlugin, IRestPlayersPlugi
                    $"EpicApp=PalServer -useperfthreads -NoAsyncLoadingThread -UseMultithreadForDS";
         if (s.RconPort > 0 && !string.IsNullOrWhiteSpace(s.RconPassword))
             args += $" -RCONEnabled=True -RCONPort={s.RconPort}";
+        if (S(s, "publicLobby", "true") == "true") args += " -publiclobby";
         return args;
     }
 
@@ -46,6 +48,7 @@ public class PalworldPlugin : GamePluginBase, IWorkshopPlugin, IRestPlayersPlugi
         ["serverDescription"] = "Palworld Server",
         ["adminPassword"]     = "",
         ["restApiPort"]       = "21512",
+        ["publicLobby"] = "true",
     };
 
     public override List<ConfigField> GetConfigFields()
@@ -56,6 +59,7 @@ public class PalworldPlugin : GamePluginBase, IWorkshopPlugin, IRestPlayersPlugi
             new() { Key = "adminPassword",     Label = "Admin password", FieldType = ConfigFieldType.Password, DefaultValue = "" },
             new() { Key = "restApiPort",       Label = "REST API port",  FieldType = ConfigFieldType.Number,   DefaultValue = "21512" },
         ]);
+        fields.Add(new() { Key = "publicLobby", Label = "Community server listing", FieldType = ConfigFieldType.Toggle, DefaultValue = "true" });
         return fields;
     }
 
@@ -78,43 +82,25 @@ public class PalworldPlugin : GamePluginBase, IWorkshopPlugin, IRestPlayersPlugi
 
     public async Task<List<OnlinePlayer>> GetPlayersAsync(GameServer server)
     {
-        var password = S(server, "adminPassword", "");
-        try
-        {
-            var req = new HttpRequestMessage(HttpMethod.Get,
-                $"{GetRestApiBaseUrl(server)}/v1/api/players");
-            var creds = Convert.ToBase64String(Encoding.UTF8.GetBytes("admin:" + password));
-            req.Headers.Authorization = new AuthenticationHeaderValue("Basic", creds);
-            var resp = await _http.SendAsync(req);
-            if (!resp.IsSuccessStatusCode)
-            {
-                LastRestApiError = $"HTTP {(int)resp.StatusCode} {resp.StatusCode} from {req.RequestUri} " +
-                                    "(check AdminPassword in PalWorldSettings.ini matches 'Admin password' in WGS Game settings)";
-                return [];
-            }
-            var json = await resp.Content.ReadAsStringAsync();
-            using var doc = JsonDocument.Parse(json);
-            var players = new List<OnlinePlayer>();
-            if (doc.RootElement.TryGetProperty("players", out var arr))
-            {
-                foreach (var p in arr.EnumerateArray())
-                {
-                    players.Add(new OnlinePlayer
-                    {
-                        Name    = p.TryGetProperty("name",    out var n) ? n.GetString() ?? "" : "",
-                        SteamId = p.TryGetProperty("userId",  out var u) ? u.GetString() ?? "" : "",
-                        Ping    = p.TryGetProperty("ping", out var pg) ? GetPingAsInt(pg) : 0,
-                    });
-                }
-            }
-            LastRestApiError = null;
-            return players;
-        }
-        catch (Exception ex)
-        {
-            LastRestApiError = $"{ex.GetType().Name}: {ex.Message} (REST API reachable at {GetRestApiBaseUrl(server)}?)";
-            return [];
-        }
+        var result = await PalworldControl.GetPlayersAsync(server);
+        LastRestApiError = result.Error;
+        return result.Players;
+    }
+
+    public override string? ValidateBeforeStart(GameServer server)
+    {
+        if (server.ServerPort is < 1 or > 65535 || server.MaxPlayers < 1) return "Set a valid Palworld game port and positive player capacity.";
+        try { _ = PalworldControl.Port(server); }
+        catch (InvalidOperationException ex) { return ex.Message; }
+        if (string.IsNullOrWhiteSpace(S(server, "adminPassword", "")))
+            return "Set a Palworld admin password so WGS can save and stop the server through REST.";
+        return null;
+    }
+
+    public override Task PreStartAsync(GameServer server)
+    {
+        PalworldSettings.Prepare(server);
+        return Task.CompletedTask;
     }
 
     // ── REST API console commands ───────────────────────────────────────────
@@ -144,12 +130,13 @@ public class PalworldPlugin : GamePluginBase, IWorkshopPlugin, IRestPlayersPlugi
                         var p = rest.Split(' ', 2, StringSplitOptions.TrimEntries);
                         int waitSec = p.Length > 0 && int.TryParse(p[0], out var s) ? s : 0;
                         var msg = p.Length > 1 ? p[1] : "Server is shutting down";
-                        return (true, await PostAsync(server, "shutdown", new { waittime = waitSec, Message = msg }));
+                        await PalworldControl.RequestAsync(server, "save", new { });
+                        return (true, await PostAsync(server, "shutdown", new { waittime = waitSec, message = msg }));
                     }
 
                 case "doexit":
                 case "stop":
-                    return (true, await PostAsync(server, "stop", new { }));
+                    return (true, "Use the WGS Stop button for save + shutdown, or explicit Force Kill. REST force-stop is not a normal Stop command.");
 
                 case "kickplayer":
                     return (true, await PostAsync(server, "kick", new { userid = rest, message = "Kicked by admin" }));
@@ -173,13 +160,13 @@ public class PalworldPlugin : GamePluginBase, IWorkshopPlugin, IRestPlayersPlugi
     private async Task<string> PostAsync(GameServer server, string endpoint, object body)
     {
         var password = S(server, "adminPassword", "");
-        var req = new HttpRequestMessage(HttpMethod.Post, $"{GetRestApiBaseUrl(server)}/v1/api/{endpoint}")
+        using var req = new HttpRequestMessage(HttpMethod.Post, $"{GetRestApiBaseUrl(server)}/v1/api/{endpoint}")
         {
             Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json")
         };
         var creds = Convert.ToBase64String(Encoding.UTF8.GetBytes("admin:" + password));
         req.Headers.Authorization = new AuthenticationHeaderValue("Basic", creds);
-        var resp = await _http.SendAsync(req);
+        using var resp = await _http.SendAsync(req);
         return resp.IsSuccessStatusCode
             ? $"[REST API] OK: {endpoint}"
             : $"[REST API] HTTP {(int)resp.StatusCode} {resp.StatusCode} from {endpoint}";

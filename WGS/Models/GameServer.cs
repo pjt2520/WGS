@@ -104,6 +104,14 @@ public class GameServer
     [JsonIgnore]
     public int CurrentPlayers { get; set; }
 
+    [JsonIgnore]
+    public DateTime? PlayerCountVerifiedAtUtc { get; set; }
+
+    [JsonIgnore]
+    public bool HasFreshPlayerCount => !PlayerCountUnknown &&
+        (GameId is not ("palworld" or "valheim") ||
+         PlayerCountVerifiedAtUtc is DateTime at && DateTime.UtcNow - at < TimeSpan.FromSeconds(60));
+
     /// <summary>True while the last player query failed (A2S/REST/SLP unreachable), i.e. CurrentPlayers is
     /// NOT a real count. Idle shutdown must treat this as "unknown", never as "nobody online".</summary>
     [JsonIgnore]

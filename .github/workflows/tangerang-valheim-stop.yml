@@ -1,9 +1,9 @@
-name: Tangerang Valheim Safe Stop
+name: Tangerang Dual Game Integration
 on:
   push:
-    branches: ['feature/tangerang-valheim-safe-stop']
+    branches: ['feature/tangerang-valheim-safe-stop', 'feature/tangerang-1.5.43-integration']
   pull_request:
-    branches: ['feature/tangerang-service-foundation']
+    branches: ['feature/tangerang-service-foundation', 'feature/tangerang-valheim-safe-stop']
   workflow_dispatch:
 permissions:
   contents: read
@@ -21,7 +21,7 @@ jobs:
         run: ./scripts/Build-ValheimStopPreview.ps1
       - uses: actions/upload-artifact@v4
         with:
-          name: Tangerang-ValheimStop-preview-win-x64
+          name: Tangerang-DualGame-preview-win-x64
           path: releases/ValheimStopPreview-*/
           retention-days: 14
           if-no-files-found: error
