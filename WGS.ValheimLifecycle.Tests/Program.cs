@@ -85,9 +85,19 @@ try
 finally
 {
     if (manager.IsRunning(server.Id)) await manager.KillAsync(server);
-    if (legacy is { HasExited: false }) legacy.Kill();
+    if (legacy is { HasExited: false })
+    {
+        legacy.Kill();
+        await legacy.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+    }
     legacy?.Dispose();
-    File.Delete(fixtureExe);
+    // Windows can retain the executable mapping briefly after exit is signalled.
+    for (var attempt = 0; ; attempt++)
+    {
+        try { File.Delete(fixtureExe); break; }
+        catch (UnauthorizedAccessException) when (attempt < 20) { await Task.Delay(250); }
+        catch (IOException) when (attempt < 20) { await Task.Delay(250); }
+    }
 }
 Console.WriteLine($"{passed} lifecycle checks passed using only synthetic game processes.");
 
