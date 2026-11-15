@@ -60,6 +60,9 @@ internal static class PalworldChecks
         var changed = PalworldSettings.Apply(ini, new Dictionary<string,string> { ["RESTAPIEnabled"]="True", ["AdminPassword"]="\"new\"" });
         Check(changed.Contains("PalSpawnNumRate=1.5") && changed.Contains("CrossplayPlatforms=(Steam,Xbox,PS5)"), "Palworld tuning and nested platform list preserved");
         Check(changed.Contains("AdminPassword=\"new\"") && changed.Contains("RESTAPIEnabled=True"), "managed REST settings updated");
+        var quotedIni = "OptionSettings=(ServerDescription=\"text,AdminPassword=old\",AdminPassword=\"old\")";
+        var quotedResult = PalworldSettings.Apply(quotedIni, new Dictionary<string,string> { ["AdminPassword"]="\"new\"" });
+        Check(quotedResult.Contains("ServerDescription=\"text,AdminPassword=old\""), "quoted setting text is not treated as an option");
         bool badConfig = false;
         try { PalworldSettings.Apply("invalid", new Dictionary<string,string>()); } catch (InvalidOperationException) { badConfig = true; }
         Check(badConfig, "malformed configuration refused");
@@ -114,11 +117,30 @@ internal static class PalworldChecks
                 Check(refused && !process.HasExited && manager.IsRunning(server.Id) && server.Status == ServerStatus.Running,
                     "failed Palworld REST stop blocks continuation and preserves live tracking");
             }
+            config.BackupPath = Path.Combine(fixtureRoot, "backups");
+            var backups = new BackupService(config);
+            bool liveBackupRefused = false;
+            try { await backups.CreateBackupAsync(server); } catch (InvalidOperationException) { liveBackupRefused = true; }
+            Check(liveBackupRefused, "live Palworld backup refused");
             manager.KillAll();
             Check(!process.HasExited, "host cleanup does not kill Palworld after refused Stop");
             await manager.KillAsync(server);
             await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
             Check(!manager.IsRunning(server.Id), "explicit Palworld Kill remains available");
+            var saves = Path.Combine(fixtureRoot, "Pal", "Saved", "SaveGames"); Directory.CreateDirectory(saves);
+            var world = Path.Combine(saves, "fixture.sav"); await File.WriteAllTextAsync(world, "saved world");
+            var backup = await backups.CreateBackupAsync(server);
+            await File.WriteAllTextAsync(world, "later change");
+            await backups.RestoreBackupAsync(server, backup.FilePath);
+            Check(await File.ReadAllTextAsync(world) == "saved world", "stopped Palworld backup/restore roundtrip");
+            var unsafeZip = Path.Combine(fixtureRoot, "unsafe.zip");
+            using (var zip = System.IO.Compression.ZipFile.Open(unsafeZip, System.IO.Compression.ZipArchiveMode.Create))
+            {
+                using var writer = new StreamWriter(zip.CreateEntry("../outside.txt").Open()); writer.Write("unsafe");
+            }
+            bool traversalRefused = false;
+            try { await backups.RestoreBackupAsync(server, unsafeZip); } catch (InvalidOperationException) { traversalRefused = true; }
+            Check(traversalRefused && !File.Exists(Path.Combine(AppContext.BaseDirectory, "outside.txt")), "backup traversal refused before extraction");
         }
         finally
         {

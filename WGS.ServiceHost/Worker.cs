@@ -529,7 +529,7 @@ public class Worker(ILogger<Worker> logger) : BackgroundService
             if (cfg.BackupOnShutdown)
             {
                 try { await backup.CreateBackupAsync(cfg); }
-                catch (Exception ex) { logger.LogWarning(ex, "Backup after shutdown failed for {Server}", cfg.DisplayName); }
+                catch (Exception ex) { logger.LogWarning(ex, "Backup after shutdown failed for {Server}", cfg.DisplayName); if (cfg.GameId is "valheim" or "palworld") throw; }
             }
             await backend.InstallAsync(FindFresh(config, cfg.Id) ?? cfg);
             live.AutoRestart = wasAutoRestart;
@@ -538,7 +538,7 @@ public class Worker(ILogger<Worker> logger) : BackgroundService
             if (fresh.BackupOnStart)
             {
                 try { await backup.CreateBackupAsync(fresh); }
-                catch (Exception ex) { logger.LogWarning(ex, "Backup before start failed for {Server}", cfg.DisplayName); }
+                catch (Exception ex) { logger.LogWarning(ex, "Backup before start failed for {Server}", cfg.DisplayName); if (cfg.GameId is "valheim" or "palworld") throw; }
             }
             await manager.StartAsync(fresh);
             await notify.NotifyAsync($"🔄 {fresh.DisplayName} updated & restarted", plugin.GameName, "#58A6FF");

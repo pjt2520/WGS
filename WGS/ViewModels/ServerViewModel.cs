@@ -1298,6 +1298,7 @@ public partial class ServerViewModel : BaseViewModel, IDisposable
             // StopPerfMonitoring called by OnStatusChanged
 
             await InstallAsync(); // runs SteamCMD update
+            if (Server.Status == ServerStatus.Error) throw new InvalidOperationException("Update failed; restart cancelled.");
 
             if (!Server.AutoUpdate)
             {

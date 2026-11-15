@@ -89,6 +89,7 @@ public class PalworldPlugin : GamePluginBase, IWorkshopPlugin, IRestPlayersPlugi
 
     public override string? ValidateBeforeStart(GameServer server)
     {
+        if (server.ServerPort is < 1 or > 65535 || server.MaxPlayers < 1) return "Set a valid Palworld game port and positive player capacity.";
         try { _ = PalworldControl.Port(server); }
         catch (InvalidOperationException ex) { return ex.Message; }
         if (string.IsNullOrWhiteSpace(S(server, "adminPassword", "")))

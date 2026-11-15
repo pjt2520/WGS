@@ -182,6 +182,8 @@ public class LocalServerBackend : IServerBackend
             await InstallFromManualDownloadAsync(server, plugin, log);
         else
             await InstallViaSteamCmdAsync(server, plugin, log);
+        if (server.Status == ServerStatus.Error)
+            throw new InvalidOperationException("Game installation/update failed. Restart was cancelled; inspect the update log.");
         // Never restart after a failed update.
         if (wasRunning) await _manager.StartAsync(server);
     }

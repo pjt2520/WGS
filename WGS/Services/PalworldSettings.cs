@@ -12,13 +12,33 @@ public static class PalworldSettings
     {
         var line = Regex.Match(text, @"(?m)^\s*OptionSettings\s*=\s*\(([^\r\n]*)\)[ \t]*\r?$", RegexOptions.IgnoreCase);
         if (!line.Success) throw new InvalidOperationException("Palworld configuration has no single-line OptionSettings block. No settings changed.");
-        var options = line.Groups[1].Value;
+        var original = line.Groups[1].Value;
+        var parts = new List<string>();
+        int start = 0, depth = 0;
+        bool quoted = false, escaped = false;
+        for (int i = 0; i < original.Length; i++)
+        {
+            var c = original[i];
+            if (quoted && c == '\\') { escaped = !escaped; continue; }
+            if (c == '"' && !escaped) quoted = !quoted;
+            escaped = false;
+            if (quoted) continue;
+            if (c == '(') depth++;
+            if (c == ')' && --depth < 0) throw new InvalidOperationException("Unbalanced Palworld configuration.");
+            if (c == ',' && depth == 0) { parts.Add(original[start..i]); start = i + 1; }
+        }
+        if (quoted || depth != 0) throw new InvalidOperationException("Unbalanced Palworld configuration.");
+        parts.Add(original[start..]);
         foreach (var (key, value) in values)
         {
-            var expression = new Regex(@"(^|,)\s*" + Regex.Escape(key) + @"\s*=\s*(?:""[^""]*""|[^,()]*)", RegexOptions.IgnoreCase);
-            if (expression.IsMatch(options)) options = expression.Replace(options, m => m.Groups[1].Value + key + "=" + value);
-            else options += (options.Length == 0 ? "" : ",") + key + "=" + value;
+            var indices = parts.Select((part, index) => (part, index))
+                .Where(x => x.part.Split('=', 2)[0].Trim().Equals(key, StringComparison.OrdinalIgnoreCase))
+                .Select(x => x.index).ToList();
+            if (indices.Count > 1) throw new InvalidOperationException("Duplicate managed Palworld option: " + key);
+            if (indices.Count == 1) parts[indices[0]] = key + "=" + value;
+            else parts.Add(key + "=" + value);
         }
+        var options = string.Join(",", parts.Where(x => !string.IsNullOrWhiteSpace(x)));
         return text[..line.Groups[1].Index] + options + text[(line.Groups[1].Index + line.Groups[1].Length)..];
     }
 

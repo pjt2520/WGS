@@ -32,6 +32,8 @@ sandbox separate. Do not run the stock updater on this custom build.
   Failed updates no longer restart in a finally block. Idle shutdown cancels its
   backup if Stop fails. Backups of these games require stopped processes so a
   multi-file world is not presented as a consistent snapshot while being written.
+  Empty protected-world backups are rejected; restore validates archive paths,
+  filesystem links and incremental chain completeness before extracting files.
 - Automatic upstream EXE replacement is blocked for the custom package.
 
 ## Verification and deployment gates
