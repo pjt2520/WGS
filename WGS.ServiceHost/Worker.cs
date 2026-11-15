@@ -169,7 +169,7 @@ public class Worker(ILogger<Worker> logger) : BackgroundService
         webApi.StartServer   = id => backend.StartAsync(FindServer(id)!);
         webApi.StopServer    = id => backend.StopAsync(FindServer(id)!);
         webApi.KillServer    = id => backend.KillAsync(FindServer(id)!);
-        webApi.RestartServer = async id => { var s = FindServer(id)!; await backend.StopAsync(s); await Task.Delay(3000); await backend.StartAsync(s); };
+        webApi.RestartServer = async id => { var s = FindServer(id)!; await backend.StopAsync(s); await manager.WaitForPortsFreeAsync(s); await backend.StartAsync(s); };
         webApi.UpdateServer  = id => backend.InstallAsync(FindServer(id)!);
         webApi.BackupServer  = async id => { await backend.CreateBackupAsync(FindServer(id)!); };
         webApi.SendCmd       = (id, cmd) => backend.SendConsoleCommandAsync(id, cmd);
@@ -178,7 +178,7 @@ public class Worker(ILogger<Worker> logger) : BackgroundService
         webApi.GetLog        = (id, offset) => backend.GetLogAsync(id, offset).GetAwaiter().GetResult();
         webApi.GetUptime     = id => manager.GetInstance(id)?.Uptime is TimeSpan t && t > TimeSpan.Zero
             ? $"{(int)t.TotalHours:D2}:{t.Minutes:D2}:{t.Seconds:D2}" : null;
-        webApi.GetFullLog    = id => manager.GetInstance(id)?.GetLogSnapshot().Select(m => m.Text) ?? [];
+        webApi.GetFullLog    = id => manager.GetLogInstance(id)?.GetLogSnapshot().Select(m => m.Text) ?? [];
         webApi.GetBackups    = id =>
         {
             var s = FindServer(id);
@@ -399,30 +399,27 @@ public class Worker(ILogger<Worker> logger) : BackgroundService
         logger.LogInformation("Tangerang service stopping; saving and stopping managed games");
         _webApi?.Stop();
 
-        // Closing the WPF desktop does NOT stop any game. Stopping the actual
-        // Windows service, however, is an intentional engine shutdown: use
-        // the backend's normal graceful stop and backup behavior, not KillAll.
-        // An unresponsive game is logged; ServerManagerService's ProcessExit
-        // handler is only a last-resort cleanup if Windows terminates us.
+        // Stop scheduling new work first, then shut down games concurrently so
+        // each gets its own 120-second Valheim exit budget within the host timeout.
+        _scheduler?.Dispose();
+        _manager?.BeginHostShutdown();
         if (_manager is not null && _backend is not null)
         {
-            foreach (var game in _config?.LoadServers() ?? [])
+            var games = (_config?.LoadServers() ?? []).Where(game => _manager.IsRunning(game.Id)).ToList();
+            await Task.WhenAll(games.Select(async game =>
             {
-                if (!_manager.IsRunning(game.Id)) continue;
                 try
                 {
-                    await _backend.StopAsync(game).WaitAsync(
-                        TimeSpan.FromSeconds(30), cancellationToken);
+                    await _backend.StopAsync(game).WaitAsync(TimeSpan.FromSeconds(140), cancellationToken);
                     logger.LogInformation("Stopped {Game} during engine shutdown", game.DisplayName);
                 }
                 catch (Exception ex)
                 {
-                    logger.LogWarning(ex, "Graceful stop incomplete for {Game}", game.DisplayName);
+                    logger.LogWarning(ex, "Graceful stop incomplete for {Game}; Valheim will not be force-killed by host cleanup", game.DisplayName);
                 }
-            }
+            }));
         }
 
-        _scheduler?.Dispose();
         _network?.Dispose();
         try { await base.StopAsync(cancellationToken); }
         finally { _ownership?.Dispose(); _ownership = null; }

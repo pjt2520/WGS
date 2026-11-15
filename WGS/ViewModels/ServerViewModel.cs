@@ -787,10 +787,14 @@ public partial class ServerViewModel : BaseViewModel, IDisposable
     private async Task RestartAsync()
     {
         AppendLog("[WGS] " + Loc.StatusStopping, ConsoleMessageType.System);
-        await StopAsync();
-        await Task.Delay(1000);
-        await _manager.WaitForPortsFreeAsync(Server);
-        await StartAsync();
+        try
+        {
+            await _backend.StopAsync(Server, new Progress<string>(msg => AppendLog(msg, ConsoleMessageType.System)));
+            RefreshBackups();
+            await _manager.WaitForPortsFreeAsync(Server);
+            await StartAsync();
+        }
+        catch (Exception ex) { AppendLog("[ERR] Restart aborted: " + ex.Message, ConsoleMessageType.Error); }
     }
 
     // ── Install / Update ────────────────────────────────────────────────────

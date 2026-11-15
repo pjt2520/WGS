@@ -118,7 +118,7 @@ try {
         $tempSettings = "$settingsFile.staging-$unique"
         $settings | ConvertTo-Json -Depth 100 |
             Set-Content -LiteralPath $tempSettings -Encoding UTF8
-        try { [IO.File]::Replace($tempSettings, $settingsFile, $null) }
+        try { [IO.File]::Replace($tempSettings, $settingsFile, $backupSettings) }
         catch {
             if (Test-Path -LiteralPath $tempSettings) {
                 Remove-Item -LiteralPath $tempSettings -Force

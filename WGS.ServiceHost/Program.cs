@@ -30,6 +30,7 @@ Environment.SetEnvironmentVariable("TANGERANG_WGS_HOME", managedHome);
 var hostArgs = args.Where((_, i) => i != homeFlag && i != homeFlag + 1).ToArray();
 var builder = Host.CreateApplicationBuilder(hostArgs);
 builder.Services.AddWindowsService(options => options.ServiceName = "Tangerang WGS Engine");
+builder.Services.Configure<HostOptions>(options => options.ShutdownTimeout = TimeSpan.FromMinutes(5));
 builder.Services.AddHostedService<Worker>();
 
 await builder.Build().RunAsync();

@@ -208,6 +208,7 @@ public partial class App : System.Windows.Application
             // WGS instance can reattach to them via RunningPid.
             if (IsRestartingForUpdate) return;
 
+            manager.BeginHostShutdown();
             foreach (var serverVm in mainVm.Servers)
             {
                 if (!serverVm.IsRunning) continue;
@@ -216,12 +217,13 @@ public partial class App : System.Windows.Application
                     var t = Task.Run(async () => {
                         try { await manager.StopAsync(serverVm.Server); } catch { }
                     });
-                    t.Wait(5000);
+                    t.Wait(string.Equals(serverVm.Server.GameId, "valheim", StringComparison.OrdinalIgnoreCase)
+                        ? TimeSpan.FromSeconds(140) : TimeSpan.FromSeconds(5));
                 }
                 catch { }
             }
 
-            // Final safety net: kill anything still alive
+            // Cleanup for other games; failed Valheim stops are deliberately preserved.
             manager.KillAll();
         }
         catch { }
