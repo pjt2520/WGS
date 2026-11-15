@@ -417,7 +417,7 @@ public partial class MainViewModel : BaseViewModel
         _webApi.GetNetwork    = () => (network.CurrentBytesInPerSec, network.CurrentBytesOutPerSec);
         _webApi.GetLog = (id, offset) =>
         {
-            var inst = manager.GetInstance(id);
+            var inst = manager.GetLogInstance(id);
             if (inst == null) return ([], [], offset);
             var (slice, next) = inst.GetLogSince(offset);
             return (

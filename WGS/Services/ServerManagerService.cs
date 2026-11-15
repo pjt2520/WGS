@@ -23,6 +23,8 @@ public class ServerInstance
     public int RestartCount { get; set; }
     public CancellationTokenSource DailyRestartCts { get; } = new();
     public nint JobHandle { get; set; } = nint.Zero;
+    public volatile bool StopRequested;
+    public IsolatedConsoleProcess? ConsoleProcess { get; set; }
 
     /// <summary>Times of recent crashes (last 10 minutes). Used for crash-loop detection.</summary>
     public List<DateTime> CrashTimes { get; } = [];
@@ -86,6 +88,25 @@ public class ServerManagerService
     private readonly NetworkMonitorService _network;
     private readonly ConfigService _config;
     private readonly ConcurrentDictionary<string, ServerInstance> _running = new();
+    private readonly ConcurrentDictionary<string, ServerInstance> _lastInstances = new();
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _lifecycle = new();
+    private volatile bool _hostStopping;
+
+    public void BeginHostShutdown()
+    {
+        _hostStopping = true;
+        foreach (var instance in _running.Values) instance.DailyRestartCts.Cancel();
+    }
+
+    private async Task RunLifecycleAsync(GameServer server, Func<Task> operation)
+    {
+        var gate = _lifecycle.GetOrAdd(server.Id, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync();
+        try { await operation(); }
+        finally { gate.Release(); }
+    }
+    private static bool IsValheim(GameServer server)
+        => string.Equals(server.GameId, "valheim", StringComparison.OrdinalIgnoreCase);
 
     [DllImport("psapi.dll", SetLastError = true)]
     private static extern bool EmptyWorkingSet(IntPtr hProcess);
@@ -124,6 +145,9 @@ public class ServerManagerService
 
     public ServerInstance? GetInstance(string serverId)
         => _running.TryGetValue(serverId, out var i) ? i : null;
+
+    public ServerInstance? GetLogInstance(string serverId)
+        => GetInstance(serverId) ?? _lastInstances.GetValueOrDefault(serverId);
 
     public int RunningCount => _running.Count;
 
@@ -166,10 +190,18 @@ public class ServerManagerService
                 return false;
             }
 
+            if (IsValheim(server) && plugin != null)
+            {
+                var expectedPath = Path.GetFullPath(Path.Combine(server.InstallPath, plugin.GetExecutable(server)));
+                if (!string.Equals(p.MainModule?.FileName, expectedPath, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("Persisted Valheim PID does not match this installation.");
+            }
             var inst = new ServerInstance(server) { Process = p, StartTime = SafeStartTime(p) };
+            _lastInstances[server.Id] = inst;
             try { p.EnableRaisingEvents = true; } catch { }
             p.Exited += (_, _) =>
             {
+                if (inst.StopRequested) return;
                 server.RunningPid = 0;
                 _running.TryRemove(server.Id, out _);
                 SetStatus(server, ServerStatus.Stopped);
@@ -182,9 +214,14 @@ public class ServerManagerService
             LogReceived?.Invoke(server.Id, msg);
             return true;
         }
-        catch
+        catch (ArgumentException) // PID no longer exists.
         {
             server.RunningPid = 0;
+            return false;
+        }
+        catch
+        {
+            if (!IsValheim(server)) server.RunningPid = 0;
             return false;
         }
     }
@@ -194,8 +231,40 @@ public class ServerManagerService
         try { return p.StartTime; } catch { return null; }
     }
 
-    public async Task StartAsync(GameServer server)
+    public Task StartAsync(GameServer server) => RunLifecycleAsync(server, async () =>
     {
+        try { await StartCoreAsync(server); }
+        catch
+        {
+            if (_running.TryGetValue(server.Id, out var failed) && failed.ConsoleProcess?.IsSuspended == true)
+            {
+                failed.StopRequested = true;
+                failed.ConsoleProcess.Dispose();
+                failed.DailyRestartCts.Cancel();
+                JobObjectService.ReleaseJob(failed.JobHandle);
+                failed.JobHandle = nint.Zero;
+                _network.UnregisterServer(server.Id);
+                _running.TryRemove(server.Id, out _);
+                server.RunningPid = 0;
+            }
+            if (!IsRunning(server.Id))
+            {
+                _running.TryRemove(server.Id, out _);
+                SetStatus(server, ServerStatus.Error);
+            }
+            throw;
+        }
+    });
+
+    private async Task StartCoreAsync(GameServer server)
+    {
+        if (_hostStopping) throw new InvalidOperationException("Engine shutdown is in progress. Start refused.");
+        if (IsRunning(server.Id)) throw new InvalidOperationException("Server is already running. Start refused.");
+        if (server.RunningPid > 0 && TryReattach(server))
+            throw new InvalidOperationException("Reattached to an existing server. Start refused.");
+        if (IsValheim(server) && server.RunningPid > 0)
+            throw new InvalidOperationException("Cannot verify persisted Valheim PID. Start refused.");
+        if (IsValheim(server)) ValheimShutdown.RequireHelper();
         var plugin = GameRegistry.Get(server.GameId);
         if (plugin == null) throw new InvalidOperationException("Unknown game: " + server.GameId);
 
@@ -213,6 +282,7 @@ public class ServerManagerService
         // name, and killing by name alone would kill the other server's process.
         var inst0 = new ServerInstance(server);
         _running[server.Id] = inst0;
+        _lastInstances[server.Id] = inst0;
         var exeName = Path.GetFileNameWithoutExtension(plugin.Executable);
         if (!string.IsNullOrEmpty(exeName))
         {
@@ -236,6 +306,8 @@ public class ServerManagerService
                                      catch { return false; }
                                  })
                                  .ToList();
+            if (IsValheim(server) && zombies.Count > 0)
+                throw new InvalidOperationException("An existing Valheim process uses this installation. Refusing pre-flight termination; reconcile it before starting.");
             foreach (var z in zombies)
             {
                 try
@@ -404,7 +476,20 @@ public class ServerManagerService
 
         var inst = inst0;
 
-        var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
+        IsolatedConsoleProcess? consoleProcess = null;
+        try
+        {
+            if (IsValheim(server)) consoleProcess = IsolatedConsoleProcess.StartSuspended(psi);
+        }
+        catch
+        {
+            _running.TryRemove(server.Id, out _);
+            SetStatus(server, ServerStatus.Error);
+            throw;
+        }
+        var proc = consoleProcess?.Process ?? new Process { StartInfo = psi };
+        proc.EnableRaisingEvents = true;
+        inst.ConsoleProcess = consoleProcess;
 
         // Some engines (Unity/Rust) write the same line to both stdout and stderr.
         // Suppress duplicates seen within a 200 ms window across both streams.
@@ -447,10 +532,23 @@ public class ServerManagerService
         {
             try
             {
+                if (!_running.TryGetValue(server.Id, out var owner) || owner != inst) return;
+                if (inst.StopRequested) return; // Stop owns cleanup and suppresses crash recovery.
+                if (consoleProcess != null)
+                {
+                    try { await consoleProcess.OutputCompletion.WaitAsync(TimeSpan.FromSeconds(3)); }
+                    catch (TimeoutException) { }
+                    consoleProcess.Dispose();
+                }
+                if (!_running.TryGetValue(server.Id, out owner) || owner != inst || inst.StopRequested) return;
+                inst.DailyRestartCts.Cancel();
+                _network.UnregisterServer(server.Id);
+                JobObjectService.ReleaseJob(inst.JobHandle);
+                inst.JobHandle = nint.Zero;
                 SetStatus(server, ServerStatus.Stopped);
                 server.RunningPid = 0;
 
-                if (!server.AutoRestart || !_running.ContainsKey(server.Id))
+                if (_hostStopping || !server.AutoRestart || !_running.ContainsKey(server.Id))
                 {
                     _running.TryRemove(server.Id, out _);
                     return;
@@ -494,7 +592,8 @@ public class ServerManagerService
                 await WaitForPortsFreeAsync(server);
 
                 // Re-check: user might have disabled auto-restart during the delay
-                if (!server.AutoRestart || !_running.ContainsKey(server.Id))
+                if (_hostStopping || !_running.TryGetValue(server.Id, out owner) || owner != inst || inst.StopRequested) return;
+                if (!server.AutoRestart)
                 {
                     _running.TryRemove(server.Id, out _);
                     return;
@@ -522,7 +621,7 @@ public class ServerManagerService
 
         try
         {
-            proc.Start();
+            if (consoleProcess == null) proc.Start();
         }
         catch (Win32Exception ex)
         {
@@ -537,7 +636,11 @@ public class ServerManagerService
             throw;
         }
 
-        if (!native)
+        if (consoleProcess != null)
+        {
+            // Resume only after identity/state are recorded below.
+        }
+        else if (!native)
         {
             proc.BeginOutputReadLine();
             proc.BeginErrorReadLine();
@@ -595,11 +698,39 @@ public class ServerManagerService
         if (server.FirewallAutoManage)
             FirewallService.AddRules(server);
 
-        SetStatus(server, ServerStatus.Running);
+        if (consoleProcess != null)
+        {
+            try
+            {
+                consoleProcess.Resume(
+                    line => { if (!plugin.IsNoiseLine(line)) AddLog(line, DetectType(line)); },
+                    line => { if (!plugin.IsNoiseLine(line)) AddLog(line, ConsoleMessageType.Error); });
+            }
+            catch
+            {
+                // Resume failed: this suspended process never ran game code.
+                inst.StopRequested = true;
+                try { proc.Kill(); } catch { }
+                consoleProcess.Dispose();
+                _running.TryRemove(server.Id, out _);
+                _network.UnregisterServer(server.Id);
+                server.RunningPid = 0;
+                SetStatus(server, ServerStatus.Error);
+                throw;
+            }
+        }
+        if (!proc.HasExited) SetStatus(server, ServerStatus.Running);
     }
 
-    public async Task StopAsync(GameServer server)
+    public Task StopAsync(GameServer server) => RunLifecycleAsync(server, () => StopCoreAsync(server));
+
+    private async Task StopCoreAsync(GameServer server)
     {
+        if (IsValheim(server))
+        {
+            await StopValheimAsync(server);
+            return;
+        }
         if (!_running.TryGetValue(server.Id, out var inst))
         {
             // WGS may have been restarted while this server kept running â€” fall back
@@ -663,6 +794,52 @@ public class ServerManagerService
 
         server.RunningPid = 0;
         SetStatus(server, ServerStatus.Stopped);
+    }
+
+    private async Task StopValheimAsync(GameServer server)
+    {
+        if (!_running.TryGetValue(server.Id, out var inst))
+        {
+            if (server.RunningPid > 0 && TryReattach(server)) inst = _running[server.Id];
+            else if (server.RunningPid > 0)
+                throw new InvalidOperationException("Cannot verify Valheim process ownership. Stop refused.");
+            else { SetStatus(server, ServerStatus.Stopped); return; }
+        }
+        inst.StopRequested = true;
+        SetStatus(server, ServerStatus.Stopping);
+        InjectLogLine(server.Id, "[Tangerang] Valheim Stop requested; no forced termination fallback.");
+        try
+        {
+            var savesBefore = ValheimSaveEvidence.Capture(Path.Combine(server.InstallPath, "saves"));
+            if (inst.Process is { HasExited: false } process)
+                await ValheimShutdown.RequestAsync(process, message => InjectLogLine(server.Id, "[Tangerang] " + message));
+            if (inst.ConsoleProcess != null)
+            {
+                try { await inst.ConsoleProcess.OutputCompletion.WaitAsync(TimeSpan.FromSeconds(3)); }
+                catch (TimeoutException) { }
+                inst.ConsoleProcess.Dispose();
+            }
+            // Exit is verified; a world save is NOT inferred from process exit.
+            InjectLogLine(server.Id, "[Tangerang] Valheim exited after Stop request.");
+            InjectLogLine(server.Id, "[Tangerang] " + ValheimSaveEvidence.DescribeChanges(
+                savesBefore, ValheimSaveEvidence.Capture(Path.Combine(server.InstallPath, "saves"))));
+            inst.DailyRestartCts.Cancel();
+            _network.UnregisterServer(server.Id);
+            JobObjectService.ReleaseJob(inst.JobHandle);
+            inst.JobHandle = nint.Zero;
+            if (server.FirewallAutoManage) FirewallService.RemoveRules(server);
+            _lastInstances[server.Id] = inst;
+            _running.TryRemove(server.Id, out _);
+            server.RunningPid = 0;
+            SetStatus(server, ServerStatus.Stopped);
+        }
+        catch (Exception ex)
+        {
+            inst.StopRequested = false;
+            SetStatus(server, inst.Process?.HasExited == false ? ServerStatus.Running : ServerStatus.Stopped);
+            InjectLogLine(server.Id, "[Tangerang] Stop failed: " + ex.Message, ConsoleMessageType.Error);
+            throw; // Restart, Update and BackupOnShutdown must not proceed.
+        }
     }
 
     private static Task TrySendSaveCommandAsync(GameServer server, IGamePlugin plugin)
@@ -820,9 +997,12 @@ public class ServerManagerService
     public bool IsRunning(string serverId)
         => _running.TryGetValue(serverId, out var inst) && inst.Process?.HasExited == false;
 
-    public Task KillAsync(GameServer server)
+    public Task KillAsync(GameServer server) => RunLifecycleAsync(server, () => KillCoreAsync(server));
+
+    private Task KillCoreAsync(GameServer server)
     {
         if (!_running.TryGetValue(server.Id, out var inst)) return KillOrphanedPidAsync(server);
+        inst.StopRequested = true;
         SetStatus(server, ServerStatus.Stopping);
         inst.DailyRestartCts.Cancel();
         JobObjectService.ReleaseJob(inst.JobHandle);
@@ -840,9 +1020,11 @@ public class ServerManagerService
     {
         foreach (var id in _running.Keys.ToList())
         {
+            // Normal host/desktop exit must not defeat a failed safe Valheim stop.
+            if (_running.TryGetValue(id, out var live) && IsValheim(live.Server)) continue;
             try { _running[id].Process?.Kill(entireProcessTree: true); } catch { }
+            _running.TryRemove(id, out _);
         }
-        _running.Clear();
     }
 
 

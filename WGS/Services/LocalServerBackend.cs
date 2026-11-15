@@ -359,7 +359,7 @@ public class LocalServerBackend : IServerBackend
 
     public Task<(List<string> lines, List<string> types, int nextOffset)> GetLogAsync(string serverId, int offset)
     {
-        var inst = _manager.GetInstance(serverId);
+        var inst = _manager.GetLogInstance(serverId);
         if (inst == null) return Task.FromResult((new List<string>(), new List<string>(), offset));
 
         var (slice, next) = inst.GetLogSince(offset);

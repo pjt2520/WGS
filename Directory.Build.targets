@@ -1,0 +1,20 @@
+<Project>
+  <!-- Helper is a separate OS process: never attach the multi-game engine to a
+       game's console. Keep it beside both desktop and service entry points. -->
+  <PropertyGroup>
+    <NeedsValheimHelper Condition="'$(MSBuildProjectName)' == 'WGS' Or '$(MSBuildProjectName)' == 'WGS.ServiceHost' Or '$(MSBuildProjectName)' == 'WGS.ValheimLifecycle.Tests'">true</NeedsValheimHelper>
+  </PropertyGroup>
+  <Target Name="CopyValheimControlBuild" AfterTargets="Build" Condition="'$(NeedsValheimHelper)' == 'true'">
+    <ItemGroup>
+      <ValheimControlBuildFiles Include="$(MSBuildThisFileDirectory)WGS.ValheimControl/bin/$(Configuration)/net10.0/$(RuntimeIdentifier)/WGS.ValheimControl*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(ValheimControlBuildFiles)" DestinationFolder="$(TargetDir)" />
+  </Target>
+  <Target Name="PublishValheimControl" AfterTargets="Publish" Condition="'$(NeedsValheimHelper)' == 'true' And '$(RuntimeIdentifier)' == 'win-x64'">
+    <PropertyGroup><ValheimControlPublishDir>$(MSBuildThisFileDirectory)WGS.ValheimControl/obj/control-publish/$(Configuration)/win-x64/</ValheimControlPublishDir></PropertyGroup>
+    <MSBuild Projects="$(MSBuildThisFileDirectory)WGS.ValheimControl/WGS.ValheimControl.csproj" Targets="Publish"
+      RemoveProperties="TargetFramework;OutputPath"
+      Properties="Configuration=$(Configuration);RuntimeIdentifier=win-x64;SelfContained=$(SelfContained);PublishSingleFile=true;PublishDir=$(ValheimControlPublishDir)" />
+    <Copy SourceFiles="$(ValheimControlPublishDir)WGS.ValheimControl.exe" DestinationFolder="$(PublishDir)" />
+  </Target>
+</Project>
