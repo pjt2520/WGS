@@ -51,6 +51,7 @@ public class BackupService
                 catch { alive = true; }
             }
             if (alive) throw new InvalidOperationException("Stop the world before backing up its files. Live copies are not guaranteed consistent.");
+            ServerManagerService.AssertNoProcessUsesInstallation(server);
         }
         if (!Directory.Exists(server.InstallPath))
             throw new DirectoryNotFoundException("Install directory not found: " + server.InstallPath);

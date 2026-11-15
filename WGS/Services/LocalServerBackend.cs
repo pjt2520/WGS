@@ -115,7 +115,7 @@ public class LocalServerBackend : IServerBackend
                 await _backup.CreateBackupAsync(server);
                 log?.Report("[WGS] Backup created.");
             }
-            catch (Exception ex) { log?.Report($"[WGS] Backup before start failed: {ex.Message}"); }
+            catch (Exception ex) { log?.Report($"[WGS] Backup before start failed: {ex.Message}"); if (server.GameId is "palworld" or "valheim") throw; }
         }
 
         _manager.AssertInstallationIdle(server);
@@ -147,7 +147,7 @@ public class LocalServerBackend : IServerBackend
                 await _backup.CreateBackupAsync(server);
                 log?.Report("[WGS] Backup created.");
             }
-            catch (Exception ex) { log?.Report($"[WGS] Backup after shutdown failed: {ex.Message}"); }
+            catch (Exception ex) { log?.Report($"[WGS] Backup after shutdown failed: {ex.Message}"); if (server.GameId is "palworld" or "valheim") throw; }
         }
     }
 
@@ -214,7 +214,7 @@ public class LocalServerBackend : IServerBackend
                 await _backup.CreateBackupAsync(server);
                 log?.Report("[Backup] Auto-backup created before update.");
             }
-            catch (Exception ex) { log?.Report($"[Backup] Pre-update backup failed: {ex.Message}"); }
+            catch (Exception ex) { log?.Report($"[Backup] Pre-update backup failed: {ex.Message}"); if (server.GameId is "palworld" or "valheim") throw; }
         }
 
         try
@@ -326,7 +326,7 @@ public class LocalServerBackend : IServerBackend
                 await _backup.CreateBackupAsync(server);
                 log?.Report("[Backup] Auto-backup created before update.");
             }
-            catch (Exception ex) { log?.Report($"[Backup] Pre-update backup failed: {ex.Message}"); }
+            catch (Exception ex) { log?.Report($"[Backup] Pre-update backup failed: {ex.Message}"); if (server.GameId is "palworld" or "valheim") throw; }
         }
 
         try

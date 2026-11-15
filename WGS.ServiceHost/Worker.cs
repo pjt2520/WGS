@@ -145,6 +145,7 @@ public class Worker(ILogger<Worker> logger) : BackgroundService
         {
             try
             {
+                if (_shutdownRequested) return;
                 var cached = watchCache.TryGetValue(id, out var c) && DateTime.UtcNow - c.At < TimeSpan.FromSeconds(30)
                     ? c.Server : null;
                 if (cached == null)
@@ -200,14 +201,12 @@ public class Worker(ILogger<Worker> logger) : BackgroundService
         // startup), otherwise they would show as stopped and could no longer be stopped from here.
         // Servers marked "Auto-start" are started here when they were not found still running — after a reboot nothing
         // else would start them (the WPF client no longer does in service mode).
-        var autoStartServers = new List<GameServer>();
         foreach (var s in config.LoadServers())
         {
             s.Status = ServerStatus.Stopped;
             var reattached = false;
             try { reattached = manager.TryReattach(s); } catch (Exception ex) { logger.LogWarning(ex, "Could not reattach {Server}", s.DisplayName); }
-            if (s.AutoStart && !reattached) autoStartServers.Add(s);
-            else if (!reattached && s.WakeOnDemand) wake.Arm(s);
+            if (!s.AutoStart && !reattached && s.WakeOnDemand) wake.Arm(s);
         }
         startupDone = true;
 
@@ -381,21 +380,6 @@ public class Worker(ILogger<Worker> logger) : BackgroundService
         // same WGS_Data\settings.json only when co-located in the same folder (see ConfigService's
         // "data always next to exe" rule) — that's what makes this the right value to reuse.
         webApi.Start(Port, config.WebApiToken, loopbackOnly: true);
-
-        // Everything is wired now — start the "Auto-start" servers (each in its own task, like the WPF client did).
-        foreach (var server in autoStartServers)
-        {
-            var srv = server;
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    logger.LogInformation("Auto-starting {Server}", srv.DisplayName);
-                    await backend.StartAsync(srv);
-                }
-                catch (Exception ex) { logger.LogWarning(ex, "Auto-start of {Server} failed", srv.DisplayName); }
-            }, stoppingToken);
-        }
 
         var serverCount = config.LoadServers().Count;
         logger.LogInformation("servers.json: {Path} ({Count} server(s))", config.ServersFile, serverCount);
@@ -575,6 +559,7 @@ public class Worker(ILogger<Worker> logger) : BackgroundService
 
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
+        _shutdownRequested = true;
         logger.LogInformation("Tangerang service stopping; saving and stopping managed games");
         _webApi?.Stop();
 

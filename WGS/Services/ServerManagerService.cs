@@ -114,6 +114,12 @@ public class ServerManagerService
     {
         if (!RequiresSafeStop(server)) return;
         if (IsRunning(server.Id)) throw new InvalidOperationException("The game is still running; operation refused.");
+        AssertNoProcessUsesInstallation(server);
+    }
+
+    public static void AssertNoProcessUsesInstallation(GameServer server)
+    {
+        if (!RequiresSafeStop(server)) return;
         var plugin = GameRegistry.Get(server.GameId)!;
         var expected = Path.GetFullPath(Path.Combine(server.InstallPath, plugin.Executable));
         foreach (var candidate in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(plugin.Executable)))
@@ -216,7 +222,7 @@ public class ServerManagerService
             {
                 var expectedPath = Path.GetFullPath(Path.Combine(server.InstallPath, plugin.GetExecutable(server)));
                 if (!string.Equals(p.MainModule?.FileName, expectedPath, StringComparison.OrdinalIgnoreCase))
-                    throw new InvalidOperationException("Persisted Valheim PID does not match this installation.");
+                    throw new InvalidOperationException("Persisted game PID does not match this installation.");
             }
             var inst = new ServerInstance(server) { Process = p, StartTime = SafeStartTime(p) };
             _lastInstances[server.Id] = inst;

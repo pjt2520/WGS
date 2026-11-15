@@ -9,7 +9,7 @@
     <Version>1.5.43</Version>
     <AssemblyVersion>1.5.43</AssemblyVersion>
     <FileVersion>1.5.43</FileVersion>
-    <InformationalVersion>1.5.43</InformationalVersion>
+    <InformationalVersion>1.5.43-tangerang.preview.1</InformationalVersion>
     <ApplicationIcon>favicon.ico</ApplicationIcon>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
