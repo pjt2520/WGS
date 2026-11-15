@@ -110,6 +110,26 @@ public class ServerManagerService
 
     private static bool RequiresSafeStop(GameServer server) => IsValheim(server) || server.GameId.Equals("palworld", StringComparison.OrdinalIgnoreCase);
 
+    public void AssertInstallationIdle(GameServer server)
+    {
+        if (!RequiresSafeStop(server)) return;
+        if (IsRunning(server.Id)) throw new InvalidOperationException("The game is still running; operation refused.");
+        var plugin = GameRegistry.Get(server.GameId)!;
+        var expected = Path.GetFullPath(Path.Combine(server.InstallPath, plugin.Executable));
+        foreach (var candidate in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(plugin.Executable)))
+        {
+            using (candidate)
+            {
+                if (candidate.HasExited) continue;
+                string? path;
+                try { path = candidate.MainModule?.FileName; }
+                catch { throw new InvalidOperationException("Cannot verify ownership of a running game process; operation refused."); }
+                if (path == null || string.Equals(Path.GetFullPath(path), expected, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("A game process already uses this installation. Stop its current owner before updating or restoring files.");
+            }
+        }
+    }
+
     [DllImport("psapi.dll", SetLastError = true)]
     private static extern bool EmptyWorkingSet(IntPtr hProcess);
 

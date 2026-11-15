@@ -86,6 +86,51 @@ internal static class PalworldChecks
         Check((await playersTask).Error != null, "missing players array never verified empty");
         playersTask = PalworldControl.GetPlayersAsync(server); await Reply(valid); await Reply("{\"players\":[]}");
         Check((await playersTask).Error == null, "validated metrics plus empty list accepted");
+        // Verify the actual manager/backend preserve a synthetic Palworld process
+        // after failed REST Stop, including the shutdown-backup and update paths.
+        var fixtureRoot = Path.Combine(AppContext.BaseDirectory, "PalworldFixture-" + Guid.NewGuid().ToString("N"));
+        var bin = Path.Combine(fixtureRoot, "Pal", "Binaries", "Win64");
+        Directory.CreateDirectory(bin);
+        foreach (var file in Directory.GetFiles(AppContext.BaseDirectory).Where(f => f.EndsWith(".dll") || f.EndsWith(".json")))
+            File.Copy(file, Path.Combine(bin, Path.GetFileName(file)));
+        var fixtureExe = Path.Combine(bin, "PalServer-Win64-Shipping-Cmd.exe");
+        File.Copy(Environment.ProcessPath!, fixtureExe);
+        using var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(fixtureExe, "-nographics --no-console")
+            { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true })!;
+        var config = new ConfigService();
+        using var network = new NetworkMonitorService();
+        var manager = new ServerManagerService(config, network);
+        server.InstallPath = fixtureRoot; server.RunningPid = process.Id; server.BackupOnShutdown = true;
+        try
+        {
+            Check(await process.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(15)) == "FIXTURE_READY", "synthetic Palworld ready");
+            Check(manager.TryReattach(server), "Palworld exact executable identity reattached");
+            var backend = new LocalServerBackend(manager, null!, null!, null!, config, null!, null!, null!, null!, null!, null!, null!, null!, null!);
+            foreach (var operation in new Func<Task>[] { () => manager.StopAsync(server), () => backend.StopAsync(server), () => backend.InstallAsync(server) })
+            {
+                var stopping = operation(); await Reply("unauthorized", 401);
+                bool refused = false;
+                try { await stopping; } catch (InvalidOperationException) { refused = true; }
+                Check(refused && !process.HasExited && manager.IsRunning(server.Id) && server.Status == ServerStatus.Running,
+                    "failed Palworld REST stop blocks continuation and preserves live tracking");
+            }
+            manager.KillAll();
+            Check(!process.HasExited, "host cleanup does not kill Palworld after refused Stop");
+            await manager.KillAsync(server);
+            await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            Check(!manager.IsRunning(server.Id), "explicit Palworld Kill remains available");
+        }
+        finally
+        {
+            if (!process.HasExited) { process.Kill(); await process.WaitForExitAsync(); }
+            process.Dispose();
+            for (int attempt = 0; ; attempt++)
+            {
+                try { Directory.Delete(fixtureRoot, true); break; }
+                catch (IOException) when (attempt < 20) { await Task.Delay(250); }
+                catch (UnauthorizedAccessException) when (attempt < 20) { await Task.Delay(250); }
+            }
+        }
         listener.Stop();
         Console.WriteLine($"{passed} Palworld/service checks passed; only a synthetic loopback API was accessed.");
     }

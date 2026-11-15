@@ -118,6 +118,8 @@ public class LocalServerBackend : IServerBackend
             catch (Exception ex) { log?.Report($"[WGS] Backup before start failed: {ex.Message}"); }
         }
 
+        _manager.AssertInstallationIdle(server);
+
         // Inject active Workshop mod IDs so plugins can build correct launch args
         if (plugin is IWorkshopPlugin && _workshop.SupportsWorkshop(plugin))
         {
@@ -175,6 +177,7 @@ public class LocalServerBackend : IServerBackend
             await _manager.StopAsync(server);
         }
 
+        _manager.AssertInstallationIdle(server);
         if (plugin.SteamAppId <= 0)
             await InstallFromManualDownloadAsync(server, plugin, log);
         else
@@ -420,6 +423,7 @@ public class LocalServerBackend : IServerBackend
             throw new InvalidOperationException(LocalizationService.Instance.RestoreStopFirst);
         var path = ResolveBackupPath(server, fileName);
         if (!File.Exists(path)) throw new FileNotFoundException("Backup file not found", path);
+        _manager.AssertInstallationIdle(server);
         await _backup.RestoreBackupAsync(server, path);
     }
 
